@@ -203,6 +203,8 @@ type ExpenseRow = {
   frequency: ExpenseFrequency
   amount: number
   category: ExpenseCategory
+  /** When false, row is excluded from monthly total, charts, and runway pull. */
+  used: boolean
 }
 
 type RunwayScenarioKey = 'optimistic' | 'pessimistic'
@@ -417,6 +419,7 @@ function createExpenseRow(
     frequency: partial?.frequency ?? DEFAULT_EXPENSE_FREQUENCY,
     amount: roundPln(partial?.amount ?? 0),
     category: partial?.category ?? categories[0] ?? 'Inne',
+    used: partial?.used ?? true,
   }
 }
 
@@ -436,12 +439,16 @@ function normalizeExpenseRow(
       : DEFAULT_EXPENSE_FREQUENCY,
     amount: roundPln(Number(row.amount) || 0),
     category,
+    used: row.used !== false,
   }
 }
 
 function expensesMonthlyTotal(expenses: ExpenseRow[]): number {
   return roundPln(
-    expenses.reduce((sum, row) => sum + monthlyEquivalent(row), 0),
+    expenses.reduce(
+      (sum, row) => (row.used ? sum + monthlyEquivalent(row) : sum),
+      0,
+    ),
   )
 }
 
@@ -651,6 +658,7 @@ function buildExpenseGroupSlices(
     number
   >
   for (const row of expenses) {
+    if (!row.used) continue
     if (!(row.category in amounts)) {
       amounts[row.category] = 0
       counts[row.category] = 0
@@ -1120,6 +1128,9 @@ function ExpensesPanel({
                     activeDir={sortDir}
                     onCycle={cycleExpenseSort}
                   />
+                  <th scope="col" className="col-used">
+                    Użyj
+                  </th>
                   <th scope="col" className="col-actions">
                     <span className="sr-only">Operacje</span>
                   </th>
@@ -1127,7 +1138,10 @@ function ExpensesPanel({
               </thead>
               <tbody>
                 {displayExpenses.map((row, index) => (
-                  <tr key={row.id}>
+                  <tr
+                    key={row.id}
+                    className={row.used ? undefined : 'is-unused'}
+                  >
                     <td>
                       <input
                         type="text"
@@ -1189,6 +1203,17 @@ function ExpensesPanel({
                         )}
                       </select>
                     </td>
+                    <td className="col-used">
+                      <input
+                        type="checkbox"
+                        checked={row.used}
+                        aria-label={`Użyj w sumie, wiersz ${index + 1}`}
+                        title="Uwzględnij w sumie, wykresie i runway"
+                        onChange={(e) =>
+                          updateExpense(row.id, { used: e.target.checked })
+                        }
+                      />
+                    </td>
                     <td className="col-actions">
                       <button
                         type="button"
@@ -1217,8 +1242,8 @@ function ExpensesPanel({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={3}>Suma miesięczna (równoważnik)</td>
-                  <td className="money total" colSpan={2}>
+                  <td colSpan={5}>Suma miesięczna (równoważnik)</td>
+                  <td className="money total">
                     {formatPlnWhole(monthlyTotal)}
                   </td>
                 </tr>
