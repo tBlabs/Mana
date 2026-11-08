@@ -813,9 +813,10 @@ function scenarioYears(capital: number, scenario: RunwayScenario): number | null
 }
 
 function formatBurn(burn: number): string {
-  if (burn > 0) return formatPlnWhole(burn)
-  if (burn === 0) return '0 zł (bilans zerowy)'
-  return `nadwyżka ${formatPlnWhole(-burn)}`
+  const whole = Math.round(Number(burn) || 0)
+  if (whole > 0) return formatPlnWhole(whole)
+  if (whole === 0) return `${formatPlnWhole(0)} (bilans zerowy)`
+  return `nadwyżka ${formatPlnWhole(-whole)}`
 }
 
 function formatYearsLabel(years: number | null): string {
@@ -1099,6 +1100,9 @@ function ExpensesPanel({
             <table className="assets expenses">
               <thead>
                 <tr>
+                  <th scope="col" className="col-used">
+                    Użyj
+                  </th>
                   <SortableHeader
                     label="Opis"
                     columnKey="description"
@@ -1128,9 +1132,6 @@ function ExpensesPanel({
                     activeDir={sortDir}
                     onCycle={cycleExpenseSort}
                   />
-                  <th scope="col" className="col-used">
-                    Użyj
-                  </th>
                   <th scope="col" className="col-actions">
                     <span className="sr-only">Operacje</span>
                   </th>
@@ -1142,6 +1143,17 @@ function ExpensesPanel({
                     key={row.id}
                     className={row.used ? undefined : 'is-unused'}
                   >
+                    <td className="col-used">
+                      <input
+                        type="checkbox"
+                        checked={row.used}
+                        aria-label={`Użyj w sumie, wiersz ${index + 1}`}
+                        title="Uwzględnij w sumie, wykresie i runway"
+                        onChange={(e) =>
+                          updateExpense(row.id, { used: e.target.checked })
+                        }
+                      />
+                    </td>
                     <td>
                       <input
                         type="text"
@@ -1202,17 +1214,6 @@ function ExpensesPanel({
                           ),
                         )}
                       </select>
-                    </td>
-                    <td className="col-used">
-                      <input
-                        type="checkbox"
-                        checked={row.used}
-                        aria-label={`Użyj w sumie, wiersz ${index + 1}`}
-                        title="Uwzględnij w sumie, wykresie i runway"
-                        onChange={(e) =>
-                          updateExpense(row.id, { used: e.target.checked })
-                        }
-                      />
                     </td>
                     <td className="col-actions">
                       <button
