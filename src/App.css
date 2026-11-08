@@ -281,6 +281,12 @@ th.money .sort-btn {
   text-align: right;
 }
 
+.col-qty input[type='number'] {
+  width: calc(10ch + 8px);
+  min-width: calc(10ch + 8px);
+  max-width: calc(10ch + 8px);
+}
+
 .col-unit input[type='number'] {
   width: 11ch;
   min-width: 11ch;
@@ -311,6 +317,27 @@ th.money .sort-btn {
   font-size: 1.05rem;
 }
 
+.col-used {
+  width: 3.25rem;
+  text-align: center;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.col-used input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #1f6feb;
+}
+
+.expenses tr.is-unused td {
+  opacity: 0.55;
+}
+
 .col-actions {
   width: 2.75rem;
   text-align: right;
@@ -323,14 +350,14 @@ th.money .sort-btn {
 
 .expenses-panel {
   margin-top: 1.5rem;
-  padding: 1.1rem 1.2rem 1.25rem;
+  padding: 0.75rem 0.85rem 0.9rem;
   border: 1px solid #d8dee6;
   border-radius: 10px;
   background: #fff;
 }
 
 .expenses-title {
-  margin: 0 0 1rem;
+  margin: 0 0 0.65rem;
   font-size: 0.95rem;
   font-weight: 650;
   color: #4b5563;
@@ -390,10 +417,16 @@ th.money .sort-btn {
 
 .charts-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: minmax(340px, 1.05fr) minmax(320px, 1fr);
   gap: 1rem;
   margin-top: 1.5rem;
   align-items: stretch;
+}
+
+@media (max-width: 900px) {
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .group-chart,
@@ -461,8 +494,8 @@ th.money .sort-btn {
 
 .expenses-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 330px);
+  gap: 0.65rem;
   align-items: start;
 }
 
@@ -472,6 +505,48 @@ th.money .sort-btn {
 
 .expenses-layout .group-chart {
   margin-top: 0;
+  padding: 0.65rem 0.75rem 0.8rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.expenses-layout .group-chart-title {
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.expenses-layout .group-chart-body {
+  gap: 0.65rem;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.expenses-layout .group-chart-visual {
+  align-self: center;
+}
+
+.expenses-layout .group-donut {
+  width: 156px;
+  height: 156px;
+}
+
+.expenses-layout .group-donut-track,
+.expenses-layout .group-donut-slice {
+  stroke-width: 14;
+}
+
+.expenses-layout .group-legend {
+  min-width: 0;
+  width: 100%;
+  flex: 0 1 auto;
+  gap: 0.35rem;
+}
+
+.expenses-layout .group-legend li {
+  font-size: 0.8rem;
+  gap: 0.4rem;
+  width: 100%;
 }
 
 @media (max-width: 900px) {
@@ -512,11 +587,18 @@ th.money .sort-btn {
   background: #f4f7fa;
 }
 
-.runway-table input {
-  width: 100%;
-  max-width: 11ch;
+.runway-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  max-width: 100%;
+}
+
+.runway-input-wrap input {
+  width: 9.5ch;
+  min-width: 0;
   box-sizing: border-box;
-  padding: 0.35rem 0.45rem;
+  padding: 0.35rem 0.4rem;
   border: 1px solid #c9d2dc;
   border-radius: 6px;
   background: #fff;
@@ -525,10 +607,39 @@ th.money .sort-btn {
   text-align: right;
 }
 
-.runway-table input:focus {
+.runway-input-wrap input:focus {
   outline: 2px solid #1f6feb;
   outline-offset: 1px;
   border-color: #1f6feb;
+}
+
+.runway-step-btn {
+  flex: 0 0 auto;
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border: 1px solid #c9d2dc;
+  border-radius: 4px;
+  background: #f4f7fa;
+  color: #15202b;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.runway-step-btn:hover {
+  border-color: #1f6feb;
+  color: #1f6feb;
+  background: #eef4ff;
+}
+
+.runway-row-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
 }
 
 .runway-scenario-tab {
@@ -554,37 +665,12 @@ th.money .sort-btn {
   font-weight: 700;
 }
 
-.runway-adjust {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.runway-adjust-label {
-  font-size: 0.8rem;
-  color: #5c6570;
-  margin-right: 0.15rem;
-}
-
-.runway-adjust-btn {
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.runway-pull-inline {
+  font-size: 0.72rem;
   padding: 0.2rem 0.45rem;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #1f6feb;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.runway-adjust-btn:hover {
-  color: #1859c4;
-  background: #eef4ff;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.25;
 }
 
 .runway-field {
@@ -654,11 +740,28 @@ th.money .sort-btn {
   font-size: 1.05rem;
 }
 
+.group-chart {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .group-chart-body {
   display: flex;
   align-items: center;
-  gap: 1.75rem;
-  flex-wrap: wrap;
+  gap: 1.25rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.charts-row .group-chart-body {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.charts-row .group-legend {
+  width: 100%;
 }
 
 .group-chart-visual {
@@ -704,41 +807,50 @@ th.money .sort-btn {
   padding: 0;
   display: grid;
   gap: 0.55rem;
-  min-width: min(100%, 280px);
-  flex: 1 1 240px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .group-legend li {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.55rem;
   font-size: 0.92rem;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .group-legend-swatch {
   width: 0.75rem;
   height: 0.75rem;
   border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .group-legend-name {
   color: #15202b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .group-legend-meta {
   display: flex;
   align-items: baseline;
-  gap: 0.55rem;
+  gap: 0.4rem;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
+  justify-self: end;
+  flex-shrink: 0;
 }
 
 .group-legend-pct {
   color: #5c6570;
   font-weight: 500;
-  min-width: 3.5rem;
+  min-width: 3rem;
   text-align: right;
 }
 

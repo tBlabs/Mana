@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import LoginPage from './LoginPage'
+import { isAuthenticated, login, logout } from './auth'
 
 const DEFAULT_ASSET_TYPES = [
   'Złotówki w gotówce',
@@ -249,6 +251,20 @@ const pln = new Intl.NumberFormat('pl-PL', {
   maximumFractionDigits: 2,
   minimumFractionDigits: 0,
 })
+
+/** Whole złoty for charts, legends, runway, expenses summaries (not assets table). */
+const plnWhole = new Intl.NumberFormat('pl-PL', {
+  style: 'currency',
+  currency: 'PLN',
+  maximumFractionDigits: 0,
+  minimumFractionDigits: 0,
+})
+
+function formatPlnWhole(value: number): string {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return plnWhole.format(0)
+  return plnWhole.format(Math.round(n))
+}
 
 const sharePct = new Intl.NumberFormat('pl-PL', {
   maximumFractionDigits: 1,
@@ -789,15 +805,60 @@ function scenarioYears(capital: number, scenario: RunwayScenario): number | null
 }
 
 function formatBurn(burn: number): string {
-  if (burn > 0) return pln.format(burn)
+  if (burn > 0) return formatPlnWhole(burn)
   if (burn === 0) return '0 zł (bilans zerowy)'
-  return `nadwyżka ${pln.format(-burn)}`
+  return `nadwyżka ${formatPlnWhole(-burn)}`
 }
 
 function formatYearsLabel(years: number | null): string {
   if (years === null) return 'nie wyczerpią się'
   if (!Number.isFinite(years)) return '—'
   return `${formatYears(years)} lat`
+}
+
+function RunwayStepInput({
+  value,
+  ariaLabel,
+  onFocus,
+  onChange,
+  onStep,
+}: {
+  value: number
+  ariaLabel: string
+  onFocus: () => void
+  onChange: (value: number) => void
+  onStep: (delta: number) => void
+}) {
+  return (
+    <div className="runway-input-wrap">
+      <button
+        type="button"
+        className="runway-step-btn"
+        aria-label={`${ariaLabel}: −100`}
+        onClick={() => onStep(-100)}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        inputMode="decimal"
+        step="10"
+        min="0"
+        aria-label={ariaLabel}
+        value={value}
+        onFocus={onFocus}
+        onChange={(e) => onChange(parseNumber(e.target.value))}
+      />
+      <button
+        type="button"
+        className="runway-step-btn"
+        aria-label={`${ariaLabel}: +100`}
+        onClick={() => onStep(100)}
+      >
+        +
+      </button>
+    </div>
+  )
 }
 
 function RunwayPanel({
@@ -818,21 +879,24 @@ function RunwayPanel({
     patch: Partial<RunwayScenario>,
   ) => void
   onPullCapital: () => void
-  onPullExpenses: () => void
+  onPullExpenses: (key: RunwayScenarioKey) => void
 }) {
   const [selected, setSelected] = useState<RunwayScenarioKey>('optimistic')
   const capital = Math.max(0, roundPln(availableCapital))
-  const incomeAdjustments = [100, -100, 1000, -1000] as const
   const scenarios: { key: RunwayScenarioKey; label: string; data: RunwayScenario }[] =
     [
       { key: 'optimistic', label: 'Optymistyczny', data: optimistic },
       { key: 'pessimistic', label: 'Pesymistyczny', data: pessimistic },
     ]
 
-  function adjustSelectedIncome(delta: number) {
-    const current = selected === 'optimistic' ? optimistic : pessimistic
-    onScenarioChange(selected, {
-      income: Math.max(0, roundPln(current.income + delta)),
+  function adjustField(
+    key: RunwayScenarioKey,
+    field: 'expenses' | 'income',
+    delta: number,
+  ) {
+    const current = key === 'optimistic' ? optimistic : pessimistic
+    onScenarioChange(key, {
+      [field]: Math.max(0, roundPln(current[field] + delta)),
     })
   }
 
@@ -841,8 +905,7 @@ function RunwayPanel({
       <h2 className="runway-title">Na ile starczy środków</h2>
       <p className="runway-hint">
         Wspólny kapitał (Gotówka, Kruszcze, Krypto, Giełda). Scenariusze mają
-        osobne wydatki i wpływy. Korekty +100/−100… zmieniają wpływy w
-        zaznaczonym scenariuszu.
+        osobne wydatki i wpływy. Przyciski ±100 przy polach korygują wartość.
       </p>
 
       <div className="runway-fields">
@@ -869,13 +932,6 @@ function RunwayPanel({
           >
             pobierz z tabeli assetów
           </button>
-          <button
-            type="button"
-            className="btn-secondary runway-pull"
-            onClick={onPullExpenses}
-          >
-            pobierz z tabeli wydatków
-          </button>
         </div>
       </div>
 
@@ -900,21 +956,29 @@ function RunwayPanel({
           </thead>
           <tbody>
             <tr>
-              <th scope="row">Wydatki</th>
+              <th scope="row">
+                <div className="runway-row-label">
+                  <span>Wydatki</span>
+                  <button
+                    type="button"
+                    className="btn-secondary runway-pull-inline"
+                    onClick={() => onPullExpenses(selected)}
+                  >
+                    pobierz z tabeli wydatków
+                  </button>
+                </div>
+              </th>
               {scenarios.map((scenario) => (
                 <td key={`${scenario.key}-expenses`}>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="10"
-                    min="0"
-                    aria-label={`Wydatki — ${scenario.label}`}
+                  <RunwayStepInput
+                    ariaLabel={`Wydatki — ${scenario.label}`}
                     value={scenario.data.expenses}
                     onFocus={() => setSelected(scenario.key)}
-                    onChange={(e) =>
-                      onScenarioChange(scenario.key, {
-                        expenses: parseNumber(e.target.value),
-                      })
+                    onChange={(expenses) =>
+                      onScenarioChange(scenario.key, { expenses })
+                    }
+                    onStep={(delta) =>
+                      adjustField(scenario.key, 'expenses', delta)
                     }
                   />
                 </td>
@@ -924,18 +988,15 @@ function RunwayPanel({
               <th scope="row">Wpływy</th>
               {scenarios.map((scenario) => (
                 <td key={`${scenario.key}-income`}>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="10"
-                    min="0"
-                    aria-label={`Wpływy — ${scenario.label}`}
+                  <RunwayStepInput
+                    ariaLabel={`Wpływy — ${scenario.label}`}
                     value={scenario.data.income}
                     onFocus={() => setSelected(scenario.key)}
-                    onChange={(e) =>
-                      onScenarioChange(scenario.key, {
-                        income: parseNumber(e.target.value),
-                      })
+                    onChange={(income) =>
+                      onScenarioChange(scenario.key, { income })
+                    }
+                    onStep={(delta) =>
+                      adjustField(scenario.key, 'income', delta)
                     }
                   />
                 </td>
@@ -962,22 +1023,6 @@ function RunwayPanel({
             </tr>
           </tbody>
         </table>
-      </div>
-
-      <div className="runway-adjust" role="group" aria-label="Szybka korekta wpływów zaznaczonego scenariusza">
-        <span className="runway-adjust-label">
-          Wpływy ({selected === 'optimistic' ? 'optymistyczny' : 'pesymistyczny'}):
-        </span>
-        {incomeAdjustments.map((delta) => (
-          <button
-            key={delta}
-            type="button"
-            className="runway-adjust-btn"
-            onClick={() => adjustSelectedIncome(delta)}
-          >
-            {delta > 0 ? `+${delta}` : String(delta)}
-          </button>
-        ))}
       </div>
     </section>
   )
@@ -1174,7 +1219,7 @@ function ExpensesPanel({
                 <tr>
                   <td colSpan={3}>Suma miesięczna (równoważnik)</td>
                   <td className="money total" colSpan={2}>
-                    {pln.format(monthlyTotal)}
+                    {formatPlnWhole(monthlyTotal)}
                   </td>
                 </tr>
               </tfoot>
@@ -1350,7 +1395,7 @@ function DonutChart({
             role="img"
             aria-label={
               total > 0
-                ? `Suma ${pln.format(total)} według grup`
+                ? `Suma ${formatPlnWhole(total)} według grup`
                 : 'Brak wartości do wyświetlenia'
             }
           >
@@ -1392,7 +1437,7 @@ function DonutChart({
               textAnchor="middle"
               className="group-donut-center-value"
             >
-              {pln.format(total)}
+              {formatPlnWhole(total)}
             </text>
           </svg>
         </div>
@@ -1408,7 +1453,7 @@ function DonutChart({
                 {formatLabel(slice.group)} ({slice.count})
               </span>
               <span className="group-legend-meta">
-                {pln.format(slice.amount)}
+                {formatPlnWhole(slice.amount)}
                 <span className="group-legend-pct">
                   {pctLabel.format(slice.pct)}%
                 </span>
@@ -1467,10 +1512,22 @@ function ExpenseDonutChart({
 function App() {
   const [store, setStore] = useState<Store>(loadStore)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [loggedIn, setLoggedIn] = useState(() => isAuthenticated())
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
   }, [store])
+
+  if (!loggedIn) {
+    return (
+      <LoginPage
+        onLogin={() => {
+          login()
+          setLoggedIn(true)
+        }}
+      />
+    )
+  }
 
   const sortedSnapshots = useMemo(
     () =>
@@ -1618,6 +1675,16 @@ function App() {
           onClick={() => setSettingsOpen(true)}
         >
           Ustawienia
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => {
+            logout()
+            setLoggedIn(false)
+          }}
+        >
+          Wyloguj
         </button>
       </div>
 
@@ -1805,13 +1872,12 @@ function App() {
               }
             })
           }
-          onPullExpenses={() =>
+          onPullExpenses={(key) =>
             setStore((prev) => {
               const total = expensesMonthlyTotal(prev.expenses)
               return {
                 ...prev,
-                optimistic: { ...prev.optimistic, expenses: total },
-                pessimistic: { ...prev.pessimistic, expenses: total },
+                [key]: { ...prev[key], expenses: total },
               }
             })
           }
