@@ -300,6 +300,13 @@ th.money .sort-btn {
   font-weight: 600;
 }
 
+.money-share {
+  margin-left: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #5c6570;
+}
+
 .money.total {
   font-size: 1.05rem;
 }

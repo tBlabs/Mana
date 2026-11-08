@@ -250,6 +250,16 @@ const pln = new Intl.NumberFormat('pl-PL', {
   minimumFractionDigits: 0,
 })
 
+const sharePct = new Intl.NumberFormat('pl-PL', {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 0,
+})
+
+function formatRowShare(amount: number, total: number): string {
+  if (!(total > 0)) return '—'
+  return `${sharePct.format((amount / total) * 100)}%`
+}
+
 /** Round PLN to grosze (2 decimal places). */
 function roundPln(value: number): number {
   const n = Number(value)
@@ -1678,7 +1688,12 @@ function App() {
                     }
                   />
                 </td>
-                <td className="money">{pln.format(rowTotal(row))}</td>
+                <td className="money">
+                  {pln.format(rowTotal(row))}
+                  <span className="money-share">
+                    {formatRowShare(rowTotal(row), grandTotal)}
+                  </span>
+                </td>
                 <td>
                   <input
                     type="text"
