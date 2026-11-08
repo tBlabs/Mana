@@ -1874,7 +1874,7 @@ function App() {
           }
           onPullExpenses={(key) =>
             setStore((prev) => {
-              const total = expensesMonthlyTotal(prev.expenses)
+              const total = Math.round(expensesMonthlyTotal(prev.expenses))
               return {
                 ...prev,
                 [key]: { ...prev[key], expenses: total },
