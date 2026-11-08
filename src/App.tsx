@@ -1819,7 +1819,7 @@ function App() {
           <tfoot>
             <tr>
               <td colSpan={3}>Suma</td>
-              <td className="money total">{pln.format(grandTotal)}</td>
+              <td className="money total">{formatPlnWhole(grandTotal)}</td>
               <td />
               <td />
               <td />
