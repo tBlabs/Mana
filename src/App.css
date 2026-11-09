@@ -89,6 +89,32 @@
   margin-top: 0.5rem;
 }
 
+.modal-actions-wrap {
+  flex-wrap: wrap;
+}
+
+.modal-config {
+  width: min(720px, 100%);
+}
+
+.settings-field textarea.config-json {
+  font-family: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.config-error {
+  margin: -0.35rem 0 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
 .snapshot-label {
   font-size: 0.9rem;
   font-weight: 600;

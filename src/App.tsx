@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import LoginPage from './LoginPage'
 import { isAuthenticated, login, logout } from './auth'
@@ -507,122 +507,175 @@ function nextSortState(
   return { sortKey: clicked, sortDir: 'asc' }
 }
 
+/** Normalize unknown JSON into a Store, or null if it is not Mana config. */
+function parseStoreValue(parsed: unknown): Store | null {
+  // Legacy flat row list → one snapshot
+  if (Array.isArray(parsed)) {
+    const rows = ensureRows(
+      parsed.map((row) =>
+        normalizeRow(row as Partial<AssetRow>, {
+          types: DEFAULT_ASSET_TYPES,
+          groups: DEFAULT_ASSET_GROUPS,
+        }),
+      ),
+    )
+    return createInitialStore(rows)
+  }
+
+  // Wrapped export: { version, exportedAt, data: Store }
+  let candidate = parsed
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    'data' in parsed &&
+    (parsed as { data: unknown }).data &&
+    typeof (parsed as { data: unknown }).data === 'object'
+  ) {
+    candidate = (parsed as { data: unknown }).data
+  }
+
+  if (!isStore(candidate) || candidate.snapshots.length === 0) {
+    return null
+  }
+
+  const assetTypes = normalizeOptionList(
+    candidate.assetTypes,
+    DEFAULT_ASSET_TYPES,
+  )
+  const assetGroups = normalizeOptionList(
+    candidate.assetGroups,
+    DEFAULT_ASSET_GROUPS,
+  )
+  const expenseCategories = normalizeOptionList(
+    candidate.expenseCategories,
+    DEFAULT_EXPENSE_CATEGORIES,
+  )
+  const optionLists = { types: assetTypes, groups: assetGroups }
+
+  const snapshots = candidate.snapshots.map((snapshot) => {
+    const rows = ensureRows(
+      Array.isArray(snapshot.rows)
+        ? snapshot.rows.map((row) => normalizeRow(row, optionLists))
+        : [createRow(undefined, optionLists)],
+    )
+    return {
+      id: typeof snapshot.id === 'string' ? snapshot.id : crypto.randomUUID(),
+      dateLabel:
+        typeof snapshot.dateLabel === 'string' && snapshot.dateLabel
+          ? snapshot.dateLabel
+          : formatDateLabel(new Date(), false),
+      createdAt:
+        typeof snapshot.createdAt === 'string'
+          ? snapshot.createdAt
+          : new Date().toISOString(),
+      rows,
+    }
+  })
+
+  const activeSnapshotId = snapshots.some((s) => s.id === candidate.activeSnapshotId)
+    ? candidate.activeSnapshotId
+    : snapshots[0].id
+
+  const sortKey = isSortKey(candidate.sortKey) ? candidate.sortKey : null
+  const sortDir =
+    candidate.sortDir === 'asc' || candidate.sortDir === 'desc'
+      ? candidate.sortDir
+      : null
+
+  const legacyRaw = candidate as Partial<Store> & {
+    monthlyExpenses?: unknown
+    monthlyIncome?: unknown
+  }
+  const legacyExpenses = roundPln(Number(legacyRaw.monthlyExpenses) || 0)
+  const legacyIncome = roundPln(Number(legacyRaw.monthlyIncome) || 0)
+  const legacyScenario: RunwayScenario = {
+    expenses: legacyExpenses,
+    income: legacyIncome,
+  }
+  const activeRows =
+    snapshots.find((s) => s.id === activeSnapshotId)?.rows ??
+    snapshots[0]?.rows ??
+    []
+  const availableCapital =
+    candidate.availableCapital === undefined || candidate.availableCapital === null
+      ? runwayCapital(activeRows)
+      : roundPln(Number(candidate.availableCapital) || 0)
+  const optimistic = normalizeRunwayScenario(
+    candidate.optimistic,
+    legacyScenario,
+  )
+  const pessimistic = normalizeRunwayScenario(
+    candidate.pessimistic,
+    legacyScenario,
+  )
+  const expenses = Array.isArray(candidate.expenses)
+    ? ensureExpenses(
+        candidate.expenses.map((row) =>
+          normalizeExpenseRow(row, expenseCategories),
+        ),
+      )
+    : [createExpenseRow(undefined, expenseCategories)]
+
+  return {
+    snapshots,
+    activeSnapshotId,
+    sortKey: sortKey && sortDir ? sortKey : null,
+    sortDir: sortKey && sortDir ? sortDir : null,
+    availableCapital,
+    optimistic,
+    pessimistic,
+    expenses,
+    assetTypes,
+    assetGroups,
+    expenseCategories,
+  }
+}
+
 function loadStore(): Store {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return createInitialStore()
-
-    const parsed: unknown = JSON.parse(raw)
-
-    // Legacy flat row list → one snapshot
-    if (Array.isArray(parsed)) {
-      const rows = ensureRows(
-        parsed.map((row) =>
-          normalizeRow(row as Partial<AssetRow>, {
-            types: DEFAULT_ASSET_TYPES,
-            groups: DEFAULT_ASSET_GROUPS,
-          }),
-        ),
-      )
-      return createInitialStore(rows)
-    }
-
-    if (!isStore(parsed) || parsed.snapshots.length === 0) {
-      return createInitialStore()
-    }
-
-    const assetTypes = normalizeOptionList(
-      parsed.assetTypes,
-      DEFAULT_ASSET_TYPES,
-    )
-    const assetGroups = normalizeOptionList(
-      parsed.assetGroups,
-      DEFAULT_ASSET_GROUPS,
-    )
-    const expenseCategories = normalizeOptionList(
-      parsed.expenseCategories,
-      DEFAULT_EXPENSE_CATEGORIES,
-    )
-    const optionLists = { types: assetTypes, groups: assetGroups }
-
-    const snapshots = parsed.snapshots.map((snapshot) => {
-      const rows = ensureRows(
-        Array.isArray(snapshot.rows)
-          ? snapshot.rows.map((row) => normalizeRow(row, optionLists))
-          : [createRow(undefined, optionLists)],
-      )
-      return {
-        id: typeof snapshot.id === 'string' ? snapshot.id : crypto.randomUUID(),
-        dateLabel:
-          typeof snapshot.dateLabel === 'string' && snapshot.dateLabel
-            ? snapshot.dateLabel
-            : formatDateLabel(new Date(), false),
-        createdAt:
-          typeof snapshot.createdAt === 'string'
-            ? snapshot.createdAt
-            : new Date().toISOString(),
-        rows,
-      }
-    })
-
-    const activeSnapshotId = snapshots.some((s) => s.id === parsed.activeSnapshotId)
-      ? parsed.activeSnapshotId
-      : snapshots[0].id
-
-    const sortKey = isSortKey(parsed.sortKey) ? parsed.sortKey : null
-    const sortDir =
-      parsed.sortDir === 'asc' || parsed.sortDir === 'desc' ? parsed.sortDir : null
-
-    const legacyRaw = parsed as Partial<Store> & {
-      monthlyExpenses?: unknown
-      monthlyIncome?: unknown
-    }
-    const legacyExpenses = roundPln(Number(legacyRaw.monthlyExpenses) || 0)
-    const legacyIncome = roundPln(Number(legacyRaw.monthlyIncome) || 0)
-    const legacyScenario: RunwayScenario = {
-      expenses: legacyExpenses,
-      income: legacyIncome,
-    }
-    const activeRows =
-      snapshots.find((s) => s.id === activeSnapshotId)?.rows ??
-      snapshots[0]?.rows ??
-      []
-    const availableCapital =
-      parsed.availableCapital === undefined || parsed.availableCapital === null
-        ? runwayCapital(activeRows)
-        : roundPln(Number(parsed.availableCapital) || 0)
-    const optimistic = normalizeRunwayScenario(
-      parsed.optimistic,
-      legacyScenario,
-    )
-    const pessimistic = normalizeRunwayScenario(
-      parsed.pessimistic,
-      legacyScenario,
-    )
-    const expenses = Array.isArray(parsed.expenses)
-      ? ensureExpenses(
-          parsed.expenses.map((row) =>
-            normalizeExpenseRow(row, expenseCategories),
-          ),
-        )
-      : [createExpenseRow(undefined, expenseCategories)]
-
-    return {
-      snapshots,
-      activeSnapshotId,
-      sortKey: sortKey && sortDir ? sortKey : null,
-      sortDir: sortKey && sortDir ? sortDir : null,
-      availableCapital,
-      optimistic,
-      pessimistic,
-      expenses,
-      assetTypes,
-      assetGroups,
-      expenseCategories,
-    }
+    return parseStoreValue(JSON.parse(raw) as unknown) ?? createInitialStore()
   } catch {
     return createInitialStore()
   }
+}
+
+function buildExportPayload(store: Store): string {
+  return JSON.stringify(
+    {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      storageKey: STORAGE_KEY,
+      data: store,
+    },
+    null,
+    2,
+  )
+}
+
+function parseImportText(text: string):
+  | { ok: true; store: Store }
+  | { ok: false; error: string } {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return { ok: false, error: 'Wklej lub wczytaj plik JSON z konfiguracją.' }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return { ok: false, error: 'Nieprawidłowy JSON — sprawdź składnię.' }
+  }
+  const store = parseStoreValue(parsed)
+  if (!store) {
+    return {
+      ok: false,
+      error:
+        'JSON nie wygląda na konfigurację Mana (brak snapshots / activeSnapshotId).',
+    }
+  }
+  return { ok: true, store }
 }
 
 function parseNumber(value: string): number {
@@ -1377,6 +1430,150 @@ function SettingsModal({
   )
 }
 
+function ImportExportModal({
+  store,
+  onImport,
+  onClose,
+}: {
+  store: Store
+  onImport: (next: Store) => void
+  onClose: () => void
+}) {
+  const exportText = useMemo(() => buildExportPayload(store), [store])
+  const [draft, setDraft] = useState(exportText)
+  const [error, setError] = useState<string | null>(null)
+  const [copyDone, setCopyDone] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(draft)
+      setCopyDone(true)
+      window.setTimeout(() => setCopyDone(false), 1500)
+    } catch {
+      setError('Nie udało się skopiować do schowka.')
+    }
+  }
+
+  function handleDownload() {
+    const blob = new Blob([draft], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const day = formatDateLabel(new Date(), false)
+    a.href = url
+    a.download = `mana-config-${day}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function handleFileChange(file: File | undefined) {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result : ''
+      setDraft(text)
+      setError(null)
+    }
+    reader.onerror = () => setError('Nie udało się odczytać pliku.')
+    reader.readAsText(file)
+  }
+
+  function handleImport() {
+    const result = parseImportText(draft)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    const ok = window.confirm(
+      'Zastąpić całą lokalną konfigurację Mana treścią z JSON? Tej operacji nie da się cofnąć.',
+    )
+    if (!ok) return
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(result.store))
+    onImport(result.store)
+    onClose()
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal modal-config"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-export-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="modal-header">
+          <h2 id="import-export-title">Import / eksport</h2>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            aria-label="Zamknij"
+          >
+            Zamknij
+          </button>
+        </header>
+        <p className="modal-hint">
+          Pełna konfiguracja z localStorage (klucz {STORAGE_KEY}): snapshoty
+          assetów, wydatki, runway i listy ustawień. Sesja logowania nie jest
+          częścią eksportu.
+        </p>
+        <label className="settings-field">
+          <span>JSON konfiguracji</span>
+          <textarea
+            className="config-json"
+            rows={16}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setError(null)
+            }}
+            spellCheck={false}
+            aria-invalid={error ? true : undefined}
+          />
+        </label>
+        {error && (
+          <p className="config-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modal-actions modal-actions-wrap">
+          <button type="button" className="btn-secondary" onClick={handleCopy}>
+            {copyDone ? 'Skopiowano' : 'Kopiuj'}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleDownload}
+          >
+            Pobierz plik
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Wczytaj plik
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json,text/plain"
+            className="sr-only"
+            onChange={(e) => {
+              handleFileChange(e.target.files?.[0])
+              e.target.value = ''
+            }}
+          />
+          <button type="button" className="btn-primary" onClick={handleImport}>
+            Importuj
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DonutChart({
   title,
   ariaLabel,
@@ -1538,6 +1735,7 @@ function ExpenseDonutChart({
 function App() {
   const [store, setStore] = useState<Store>(loadStore)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [importExportOpen, setImportExportOpen] = useState(false)
   const [loggedIn, setLoggedIn] = useState(() => isAuthenticated())
 
   useEffect(() => {
@@ -1701,6 +1899,13 @@ function App() {
           onClick={() => setSettingsOpen(true)}
         >
           Ustawienia
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => setImportExportOpen(true)}
+        >
+          Import / eksport
         </button>
         <button
           type="button"
@@ -1928,6 +2133,14 @@ function App() {
               ...next,
             }))
           }
+        />
+      )}
+
+      {importExportOpen && (
+        <ImportExportModal
+          store={store}
+          onClose={() => setImportExportOpen(false)}
+          onImport={(next) => setStore(next)}
         />
       )}
     </div>
