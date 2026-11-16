@@ -2,9 +2,9 @@ import { DatasetType, OnlineStorage } from '@tblabs/storage'
 
 export const STORAGE_SERVER = 'https://stage.storage.specteam.pl/v5/'
 /** OnlineStorage database directory on stage. */
-export const STORAGE_DATABASE = 'Snapshots'
+export const STORAGE_DATABASE = 'Mana'
 /** ObjectDataset inside the Snapshots database (app-owned items). */
-export const STORAGE_DATASET = 'Mana'
+export const STORAGE_DATASET = 'Snapshots'
 
 export type RemoteSnapshot = {
   id: string
@@ -46,6 +46,14 @@ function snapshotsDataset() {
   return storage.GetObjectDataset<RemoteSnapshot>(STORAGE_DATASET)
 }
 
+/** Ids already stored remotely. Avoids listing the dataset on every edit. */
+const knownSnapshotIds = new Set<string>()
+
+function rememberSnapshotIds(ids: Iterable<string>): void {
+  knownSnapshotIds.clear()
+  for (const id of ids) knownSnapshotIds.add(id)
+}
+
 async function ensureDataset(): Promise<void> {
   const exists = await storage.DatasetExists(STORAGE_DATASET)
   if (exists) return
@@ -64,6 +72,7 @@ export async function loginToStorage(
 }
 
 export async function logoutFromStorage(): Promise<void> {
+  knownSnapshotIds.clear()
   storage.Logout()
 }
 
@@ -87,17 +96,16 @@ export async function fetchRemoteSnapshots(): Promise<RemoteSnapshot[]> {
       } satisfies RemoteSnapshot
     }),
   )
+  rememberSnapshotIds(items.map((item) => item.id))
   return items
 }
 
-/** Upsert/delete so remote ObjectDataset matches the given snapshots. */
+/** Write snapshots directly. Known ids are updated, new ones added. */
 export async function pushRemoteSnapshots(
   snapshots: RemoteSnapshot[],
 ): Promise<void> {
-  await ensureDataset()
   const dataset = snapshotsDataset()
-  const remoteIds = new Set(await dataset.GetAllIds())
-  const localIds = new Set(snapshots.map((s) => s.id))
+  const nextIds = new Set<string>()
 
   for (const snapshot of snapshots) {
     const payload: RemoteSnapshot = {
@@ -106,18 +114,22 @@ export async function pushRemoteSnapshots(
       createdAt: snapshot.createdAt,
       rows: snapshot.rows,
     }
-    if (remoteIds.has(snapshot.id)) {
+    nextIds.add(snapshot.id)
+    if (knownSnapshotIds.has(snapshot.id)) {
       await dataset.Update(snapshot.id, payload)
     } else {
       await dataset.Add(snapshot.id, payload)
+      knownSnapshotIds.add(snapshot.id)
     }
   }
 
-  for (const id of remoteIds) {
-    if (!localIds.has(id)) {
+  for (const id of knownSnapshotIds) {
+    if (!nextIds.has(id)) {
       await dataset.Delete(id)
     }
   }
+
+  rememberSnapshotIds(nextIds)
 }
 
 export function authCredentialHint(): string {

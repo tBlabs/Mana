@@ -1442,6 +1442,115 @@ function GroupDonutChart({
   )
 }
 
+type AppRoute = 'login' | 'assets' | 'other'
+
+const NAV_EVENT = 'mana-navigate'
+
+function stripRouteSlash(path: string): string {
+  if (path.length > 1 && path.endsWith('/')) return path.slice(0, -1)
+  return path
+}
+
+function appRootFromPath(pathname: string): string {
+  let path = stripRouteSlash(pathname)
+  path = path.replace(/\/(login|zasoby)$/, '').replace(/\/index\.html$/, '')
+  path = stripRouteSlash(path)
+  return path === '/' ? '' : path
+}
+
+function routeFromPath(pathname: string): AppRoute {
+  const path = stripRouteSlash(pathname)
+  if (path.endsWith('/login')) return 'login'
+  if (path.endsWith('/zasoby')) return 'assets'
+  return 'other'
+}
+
+function urlForRoute(route: 'login' | 'assets'): string {
+  const root = appRootFromPath(window.location.pathname)
+  return `${root}/${route === 'login' ? 'login' : 'zasoby'}`
+}
+
+function navigate(route: 'login' | 'assets', replace = false) {
+  const url = urlForRoute(route)
+  if (stripRouteSlash(window.location.pathname) === url) return
+  if (replace) history.replaceState(null, '', url)
+  else history.pushState(null, '', url)
+  window.dispatchEvent(new Event(NAV_EVENT))
+}
+
+function useAppRoute(): AppRoute {
+  const [route, setRoute] = useState<AppRoute>(() =>
+    routeFromPath(window.location.pathname),
+  )
+  useEffect(() => {
+    const sync = () => setRoute(routeFromPath(window.location.pathname))
+    window.addEventListener('popstate', sync)
+    window.addEventListener(NAV_EVENT, sync)
+    return () => {
+      window.removeEventListener('popstate', sync)
+      window.removeEventListener(NAV_EVENT, sync)
+    }
+  }, [])
+  return route
+}
+
+function LoginPage({
+  login,
+  password,
+  busy,
+  error,
+  onLoginChange,
+  onPasswordChange,
+  onSubmit,
+}: {
+  login: string
+  password: string
+  busy: boolean
+  error: string
+  onLoginChange: (value: string) => void
+  onPasswordChange: (value: string) => void
+  onSubmit: (e: FormEvent) => void
+}) {
+  return (
+    <main className="login-page">
+      <form className="login-card" onSubmit={onSubmit}>
+        <h1>Mana</h1>
+        <p className="login-lead">Zaloguj się, żeby otworzyć zasoby.</p>
+        <label className="login-field">
+          Login
+          <input
+            type="text"
+            name="storage-login"
+            autoComplete="username"
+            value={login}
+            onChange={(e) => onLoginChange(e.target.value)}
+            required
+          />
+        </label>
+        <label className="login-field">
+          Hasło
+          <input
+            type="password"
+            name="storage-password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => onPasswordChange(e.target.value)}
+            required
+          />
+        </label>
+        <button type="submit" className="btn-primary" disabled={busy}>
+          {busy ? 'Logowanie…' : 'Zaloguj'}
+        </button>
+        {error && (
+          <p className="storage-auth-error" role="alert">
+            {error}
+          </p>
+        )}
+      </form>
+    </main>
+  )
+}
+
 function ExpenseDonutChart({
   expenses,
   categories,
@@ -1467,6 +1576,7 @@ function ExpenseDonutChart({
 function App() {
   const [store, setStore] = useState<Store>(loadStore)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [deleteSnapshotOpen, setDeleteSnapshotOpen] = useState(false)
   const [sync, setSync] = useState<SyncState>({
     status: 'idle',
     message: '',
@@ -1475,6 +1585,7 @@ function App() {
   const [authPassword, setAuthPassword] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
+  const route = useAppRoute()
   const skipNextRemotePush = useRef(false)
   const remotePushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hydrateStarted = useRef(false)
@@ -1592,7 +1703,7 @@ function App() {
           })
         }
       })()
-    }, 600)
+    }, 1000)
 
     return () => {
       if (remotePushTimer.current) clearTimeout(remotePushTimer.current)
@@ -1646,6 +1757,7 @@ function App() {
       remoteReady.current = true
       setAuthPassword('')
       setSync({ status: 'ok', message: 'Zalogowano i zsynchronizowano.' })
+      navigate('assets', true)
     } catch (error) {
       setAuthError(
         error instanceof Error ? error.message : 'Logowanie nieudane.',
@@ -1718,6 +1830,23 @@ function App() {
     )
   }
 
+  function deleteActiveSnapshot() {
+    setDeleteSnapshotOpen(false)
+    setStore((prev) => {
+      if (prev.snapshots.length <= 1) return prev
+      const removeId = prev.snapshots.some((s) => s.id === prev.activeSnapshotId)
+        ? prev.activeSnapshotId
+        : prev.snapshots[0]?.id
+      if (!removeId) return prev
+      const snapshots = prev.snapshots.filter((s) => s.id !== removeId)
+      const activeSnapshotId = [...snapshots].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      )[0]?.id
+      if (!activeSnapshotId) return prev
+      return { ...prev, snapshots, activeSnapshotId }
+    })
+  }
+
   function addSnapshot() {
     setStore((prev) => {
       const source =
@@ -1743,6 +1872,30 @@ function App() {
     }))
   }
 
+  const authed = isStorageAuthorized() && sync.status !== 'auth-required'
+
+  useEffect(() => {
+    if (authed) {
+      if (route !== 'assets') navigate('assets', true)
+      return
+    }
+    if (route !== 'login') navigate('login', true)
+  }, [authed, route])
+
+  useEffect(() => {
+    document.title =
+      authed && route !== 'login' ? 'Mana — zasoby' : 'Mana — logowanie'
+  }, [authed, route])
+
+  useEffect(() => {
+    if (!deleteSnapshotOpen) return
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setDeleteSnapshotOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [deleteSnapshotOpen])
+
   const displayRows = useMemo(() => {
     if (!store.sortKey || !store.sortDir) return rows
     const dir = store.sortDir === 'asc' ? 1 : -1
@@ -1767,6 +1920,21 @@ function App() {
         activeDir={store.sortDir}
         onCycle={(key) => cycleSort(key as SortKey)}
         className={className}
+      />
+    )
+  }
+
+  if (!authed || route === 'login') {
+    if (authed) return null
+    return (
+      <LoginPage
+        login={authLogin}
+        password={authPassword}
+        busy={authBusy}
+        error={authError}
+        onLoginChange={setAuthLogin}
+        onPasswordChange={setAuthPassword}
+        onSubmit={handleStorageLogin}
       />
     )
   }
@@ -1801,6 +1969,32 @@ function App() {
         </button>
         <button
           type="button"
+          className="btn-delete-snapshot"
+          onClick={() => setDeleteSnapshotOpen(true)}
+          disabled={store.snapshots.length <= 1 || !activeSnapshot}
+          aria-label="Usuń snapshot"
+          title={
+            store.snapshots.length <= 1
+              ? 'Nie można usunąć jedynego snapshota'
+              : 'Usuń bieżący snapshot'
+          }
+        >
+          <svg
+            className="icon-trash"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              fill="currentColor"
+              d="M9 3h6a1 1 0 0 1 1 1v1h4v2h-1v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7H4V5h4V4a1 1 0 0 1 1-1Zm1 2v0h4V5h-4Zm-2 4h2v10H8V9Zm4 0h2v10h-2V9Zm4 0h2v10h-2V9Z"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
           className="btn-secondary"
           onClick={() => setSettingsOpen(true)}
         >
@@ -1827,44 +2021,13 @@ function App() {
                 status: 'auth-required',
                 message: authCredentialHint(),
               })
+              navigate('login', true)
             }}
           >
-            Wyloguj storage
+            Wyloguj
           </button>
         )}
       </div>
-
-      {sync.status === 'auth-required' && (
-        <form className="storage-auth" onSubmit={handleStorageLogin}>
-          <p className="storage-auth-hint">
-            Snapshoty wymagają logowania do OnlineStorage (baza{' '}
-            <code>Snapshots</code>). Podaj login i hasło użytkownika tej bazy.
-          </p>
-          <input
-            type="text"
-            name="storage-login"
-            autoComplete="username"
-            placeholder="Login"
-            value={authLogin}
-            onChange={(e) => setAuthLogin(e.target.value)}
-            aria-label="Login storage"
-          />
-          <input
-            type="password"
-            name="storage-password"
-            autoComplete="current-password"
-            placeholder="Hasło"
-            value={authPassword}
-            onChange={(e) => setAuthPassword(e.target.value)}
-            aria-label="Hasło storage"
-            required
-          />
-          <button type="submit" className="btn-primary" disabled={authBusy}>
-            {authBusy ? 'Logowanie…' : 'Zaloguj do storage'}
-          </button>
-          {authError && <p className="storage-auth-error">{authError}</p>}
-        </form>
-      )}
 
       {sync.status === 'error' && sync.message && (
         <p className="storage-auth-error" role="alert">
@@ -2069,6 +2232,46 @@ function App() {
         categories={store.expenseCategories}
         onChange={(expenses) => setStore((prev) => ({ ...prev, expenses }))}
       />
+
+      {deleteSnapshotOpen && activeSnapshot && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setDeleteSnapshotOpen(false)}
+        >
+          <div
+            className="modal modal-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-snapshot-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h2 id="delete-snapshot-title">Usunąć snapshot?</h2>
+            </header>
+            <p className="modal-hint">
+              Czy na pewno usunąć stan z {activeSnapshot.dateLabel}? Tej
+              operacji nie cofniesz.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setDeleteSnapshotOpen(false)}
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={deleteActiveSnapshot}
+              >
+                Usuń
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {settingsOpen && (
         <SettingsModal
