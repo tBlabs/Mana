@@ -1,5 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
+import {
+  authCredentialHint,
+  fetchRemoteSnapshots,
+  isAuthError,
+  isStorageAuthorized,
+  loginToStorage,
+  logoutFromStorage,
+  pushRemoteSnapshots,
+  type SyncState,
+} from './remoteStorage'
 
 const DEFAULT_ASSET_TYPES = [
   'Złotówki w gotówce',
@@ -1457,10 +1467,197 @@ function ExpenseDonutChart({
 function App() {
   const [store, setStore] = useState<Store>(loadStore)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sync, setSync] = useState<SyncState>({
+    status: 'idle',
+    message: '',
+  })
+  const [authLogin, setAuthLogin] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const skipNextRemotePush = useRef(false)
+  const remotePushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hydrateStarted = useRef(false)
+  const remoteReady = useRef(false)
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
   }, [store])
+
+  useEffect(() => {
+    if (hydrateStarted.current) return
+    hydrateStarted.current = true
+
+    async function hydrateFromRemote() {
+      if (!isStorageAuthorized()) {
+        setSync({
+          status: 'auth-required',
+          message: authCredentialHint(),
+        })
+        return
+      }
+
+      setSync({ status: 'syncing', message: 'Ładowanie snapshotów…' })
+      try {
+        const remote = await fetchRemoteSnapshots()
+        if (remote.length > 0) {
+          skipNextRemotePush.current = true
+          setStore((prev) => {
+            const snapshots = remote.map((snapshot) => {
+              const rows = ensureRows(
+                Array.isArray(snapshot.rows)
+                  ? snapshot.rows.map((row) =>
+                      normalizeRow(row as Partial<AssetRow>, {
+                        types: prev.assetTypes,
+                        groups: prev.assetGroups,
+                      }),
+                    )
+                  : [createRow(undefined, {
+                      types: prev.assetTypes,
+                      groups: prev.assetGroups,
+                    })],
+              )
+              return {
+                id: snapshot.id,
+                dateLabel: snapshot.dateLabel,
+                createdAt: snapshot.createdAt,
+                rows,
+              }
+            })
+            const activeSnapshotId = snapshots.some(
+              (s) => s.id === prev.activeSnapshotId,
+            )
+              ? prev.activeSnapshotId
+              : snapshots[0].id
+            return { ...prev, snapshots, activeSnapshotId }
+          })
+          remoteReady.current = true
+          setSync({ status: 'ok', message: 'Snapshoty zsynchronizowane.' })
+          return
+        }
+
+        await pushRemoteSnapshots(store.snapshots)
+        remoteReady.current = true
+        setSync({
+          status: 'ok',
+          message: 'Wysłano lokalne snapshoty do storage.',
+        })
+      } catch (error) {
+        if (isAuthError(error)) {
+          setSync({
+            status: 'auth-required',
+            message: authCredentialHint(),
+          })
+          return
+        }
+        setSync({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'Błąd synchronizacji.',
+        })
+      }
+    }
+
+    void hydrateFromRemote()
+    // Initial hydrate only — store.snapshots captured for empty-remote seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (skipNextRemotePush.current) {
+      skipNextRemotePush.current = false
+      return
+    }
+    if (!remoteReady.current || !isStorageAuthorized()) return
+
+    if (remotePushTimer.current) clearTimeout(remotePushTimer.current)
+    remotePushTimer.current = setTimeout(() => {
+      void (async () => {
+        setSync({ status: 'syncing', message: 'Zapisywanie snapshotów…' })
+        try {
+          await pushRemoteSnapshots(store.snapshots)
+          setSync({ status: 'ok', message: 'Snapshoty zapisane.' })
+        } catch (error) {
+          if (isAuthError(error)) {
+            setSync({
+              status: 'auth-required',
+              message: authCredentialHint(),
+            })
+            return
+          }
+          setSync({
+            status: 'error',
+            message:
+              error instanceof Error ? error.message : 'Błąd zapisu.',
+          })
+        }
+      })()
+    }, 600)
+
+    return () => {
+      if (remotePushTimer.current) clearTimeout(remotePushTimer.current)
+    }
+  }, [store.snapshots])
+
+  async function handleStorageLogin(e: FormEvent) {
+    e.preventDefault()
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      await loginToStorage(authLogin, authPassword)
+      setSync({ status: 'syncing', message: 'Ładowanie snapshotów…' })
+      const remote = await fetchRemoteSnapshots()
+      if (remote.length > 0) {
+        skipNextRemotePush.current = true
+        setStore((prev) => {
+          const snapshots = remote.map((snapshot) => {
+            const rows = ensureRows(
+              Array.isArray(snapshot.rows)
+                ? snapshot.rows.map((row) =>
+                    normalizeRow(row as Partial<AssetRow>, {
+                      types: prev.assetTypes,
+                      groups: prev.assetGroups,
+                    }),
+                  )
+                : [
+                    createRow(undefined, {
+                      types: prev.assetTypes,
+                      groups: prev.assetGroups,
+                    }),
+                  ],
+            )
+            return {
+              id: snapshot.id,
+              dateLabel: snapshot.dateLabel,
+              createdAt: snapshot.createdAt,
+              rows,
+            }
+          })
+          const activeSnapshotId = snapshots.some(
+            (s) => s.id === prev.activeSnapshotId,
+          )
+            ? prev.activeSnapshotId
+            : snapshots[0].id
+          return { ...prev, snapshots, activeSnapshotId }
+        })
+      } else {
+        await pushRemoteSnapshots(store.snapshots)
+      }
+      remoteReady.current = true
+      setAuthPassword('')
+      setSync({ status: 'ok', message: 'Zalogowano i zsynchronizowano.' })
+    } catch (error) {
+      setAuthError(
+        error instanceof Error ? error.message : 'Logowanie nieudane.',
+      )
+      setSync({
+        status: 'auth-required',
+        message: authCredentialHint(),
+      })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
 
   const sortedSnapshots = useMemo(
     () =>
@@ -1609,7 +1806,71 @@ function App() {
         >
           Ustawienia
         </button>
+        <span
+          className={`sync-status sync-${sync.status}`}
+          title={sync.message || undefined}
+        >
+          {sync.status === 'idle' && 'Storage: —'}
+          {sync.status === 'syncing' && 'Storage: sync…'}
+          {sync.status === 'ok' && 'Storage: OK'}
+          {sync.status === 'auth-required' && 'Storage: login'}
+          {sync.status === 'error' && 'Storage: błąd'}
+        </span>
+        {isStorageAuthorized() && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              void logoutFromStorage()
+              remoteReady.current = false
+              setSync({
+                status: 'auth-required',
+                message: authCredentialHint(),
+              })
+            }}
+          >
+            Wyloguj storage
+          </button>
+        )}
       </div>
+
+      {sync.status === 'auth-required' && (
+        <form className="storage-auth" onSubmit={handleStorageLogin}>
+          <p className="storage-auth-hint">
+            Snapshoty wymagają logowania do OnlineStorage (baza{' '}
+            <code>Snapshots</code>). Podaj login i hasło użytkownika tej bazy.
+          </p>
+          <input
+            type="text"
+            name="storage-login"
+            autoComplete="username"
+            placeholder="Login"
+            value={authLogin}
+            onChange={(e) => setAuthLogin(e.target.value)}
+            aria-label="Login storage"
+          />
+          <input
+            type="password"
+            name="storage-password"
+            autoComplete="current-password"
+            placeholder="Hasło"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            aria-label="Hasło storage"
+            required
+          />
+          <button type="submit" className="btn-primary" disabled={authBusy}>
+            {authBusy ? 'Logowanie…' : 'Zaloguj do storage'}
+          </button>
+          {authError && <p className="storage-auth-error">{authError}</p>}
+        </form>
+      )}
+
+      {sync.status === 'error' && sync.message && (
+        <p className="storage-auth-error" role="alert">
+          {sync.message}
+        </p>
+      )}
 
       <div className="table-wrap">
         <table className="assets">

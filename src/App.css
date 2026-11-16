@@ -12,6 +12,58 @@
   flex-wrap: wrap;
 }
 
+.sync-status {
+  margin-left: auto;
+  font-size: 0.85rem;
+  color: #5b6b7c;
+}
+
+.sync-ok {
+  color: #2f6b3a;
+}
+
+.sync-auth-required,
+.sync-error {
+  color: #9a3412;
+}
+
+.sync-syncing {
+  color: #1d4f91;
+}
+
+.storage-auth {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.storage-auth-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.storage-auth input {
+  min-width: 10rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.storage-auth-error {
+  flex: 1 1 100%;
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.88rem;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
