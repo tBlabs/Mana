@@ -8,6 +8,8 @@ import {
   loginToStorage,
   logoutFromStorage,
   pushRemoteSnapshots,
+  remoteSnapshotHasFinance,
+  type RemoteSnapshot,
   type SyncState,
 } from './remoteStorage'
 
@@ -181,8 +183,16 @@ type AssetRow = {
   type: AssetType
   quantity: number
   unitValue: number
+  unitValueMax: number
   location: string
   group: AssetGroup
+}
+
+type SnapshotFinance = {
+  expenses: ExpenseRow[]
+  availableCapital: number
+  optimistic: RunwayScenario
+  pessimistic: RunwayScenario
 }
 
 type Snapshot = {
@@ -190,12 +200,13 @@ type Snapshot = {
   dateLabel: string
   createdAt: string
   rows: AssetRow[]
-}
+} & SnapshotFinance
 
 type SortKey =
   | 'type'
   | 'quantity'
   | 'unitValue'
+  | 'unitValueMax'
   | 'total'
   | 'location'
   | 'group'
@@ -248,6 +259,7 @@ const SORT_KEYS: readonly SortKey[] = [
   'type',
   'quantity',
   'unitValue',
+  'unitValueMax',
   'total',
   'location',
   'group',
@@ -260,11 +272,33 @@ const pln = new Intl.NumberFormat('pl-PL', {
   minimumFractionDigits: 0,
 })
 
+function formatZlotyPerMonth(value: number): string {
+  const amount = pln
+    .formatToParts(value)
+    .filter((part) => part.type !== 'currency' && part.type !== 'literal')
+    .map((part) => part.value)
+    .join('')
+    .trim()
+  return `${amount} zł / mies.`
+}
+
+const shareLabel = new Intl.NumberFormat('pl-PL', {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 0,
+})
+
 /** Round PLN to grosze (2 decimal places). */
 function roundPln(value: number): number {
   const n = Number(value)
   if (!Number.isFinite(n)) return 0
   return Math.round(n * 100) / 100
+}
+
+/** Round a displayed expense total to whole złoty. */
+function roundZloty(value: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.round(n)
 }
 
 function parseQuantity(value: string): number {
@@ -280,11 +314,13 @@ function createRow(
   const types = lists?.types?.length ? lists.types : DEFAULT_ASSET_TYPES
   const groups = lists?.groups?.length ? lists.groups : DEFAULT_ASSET_GROUPS
   const type = partial?.type ?? types[0]
+  const unitValue = roundPln(partial?.unitValue ?? 0)
   return {
     id: crypto.randomUUID(),
     type,
     quantity: Number(partial?.quantity) || 0,
-    unitValue: roundPln(partial?.unitValue ?? 0),
+    unitValue,
+    unitValueMax: roundPln(partial?.unitValueMax ?? unitValue),
     location: partial?.location ?? '',
     group: partial?.group ?? suggestGroup(type, groups),
   }
@@ -298,11 +334,14 @@ function normalizeRow(
   const groups = lists?.groups?.length ? lists.groups : DEFAULT_ASSET_GROUPS
   const type = migrateAssetType(row.type, types)
   const quantity = Number(row.quantity)
+  const unitValue = roundPln(Number(row.unitValue) || 0)
+  const hasMax = row.unitValueMax !== undefined && row.unitValueMax !== null
   return {
     id: typeof row.id === 'string' ? row.id : crypto.randomUUID(),
     type,
     quantity: Number.isFinite(quantity) ? quantity : 0,
-    unitValue: roundPln(Number(row.unitValue) || 0),
+    unitValue,
+    unitValueMax: hasMax ? roundPln(Number(row.unitValueMax) || 0) : unitValue,
     location: typeof row.location === 'string' ? row.location : '',
     group: migrateAssetGroup(row.group, type, groups),
   }
@@ -314,6 +353,7 @@ function cloneRows(rows: AssetRow[]): AssetRow[] {
       type: row.type,
       quantity: row.quantity,
       unitValue: row.unitValue,
+      unitValueMax: row.unitValueMax,
       location: row.location,
       group: row.group,
     }),
@@ -346,29 +386,44 @@ function nextDateLabel(existing: Snapshot[], now = new Date()): string {
   return `${label}-${crypto.randomUUID().slice(0, 4)}`
 }
 
-function createSnapshot(rows: AssetRow[], dateLabel: string): Snapshot {
+function createSnapshot(
+  rows: AssetRow[],
+  dateLabel: string,
+  finance: SnapshotFinance,
+): Snapshot {
   return {
     id: crypto.randomUUID(),
     dateLabel,
     createdAt: new Date().toISOString(),
     rows: ensureRows(rows),
+    expenses: ensureExpenses(finance.expenses.map((row) => ({ ...row }))),
+    availableCapital: roundPln(finance.availableCapital),
+    optimistic: { ...finance.optimistic },
+    pessimistic: { ...finance.pessimistic },
   }
 }
 
 function createInitialStore(rows?: AssetRow[]): Store {
+  const finance: SnapshotFinance = {
+    expenses: [createExpenseRow()],
+    availableCapital: 0,
+    optimistic: { expenses: 0, income: 0 },
+    pessimistic: { expenses: 0, income: 0 },
+  }
   const snapshot = createSnapshot(
     ensureRows(rows ?? [createRow()]),
     formatDateLabel(new Date(), false),
+    finance,
   )
   return {
     snapshots: [snapshot],
     activeSnapshotId: snapshot.id,
     sortKey: null,
     sortDir: null,
-    availableCapital: 0,
-    optimistic: { expenses: 0, income: 0 },
-    pessimistic: { expenses: 0, income: 0 },
-    expenses: [createExpenseRow()],
+    availableCapital: snapshot.availableCapital,
+    optimistic: snapshot.optimistic,
+    pessimistic: snapshot.pessimistic,
+    expenses: snapshot.expenses,
     assetTypes: [...DEFAULT_ASSET_TYPES],
     assetGroups: [...DEFAULT_ASSET_GROUPS],
     expenseCategories: [...DEFAULT_EXPENSE_CATEGORIES],
@@ -424,7 +479,7 @@ function normalizeExpenseRow(
 }
 
 function expensesMonthlyTotal(expenses: ExpenseRow[]): number {
-  return roundPln(
+  return roundZloty(
     expenses.reduce((sum, row) => sum + monthlyEquivalent(row), 0),
   )
 }
@@ -433,9 +488,98 @@ function ensureExpenses(rows: ExpenseRow[]): ExpenseRow[] {
   return rows.length > 0 ? rows : [createExpenseRow()]
 }
 
+function financeFromUnknown(
+  source: object,
+  fallback: SnapshotFinance,
+  categories: string[],
+): SnapshotFinance {
+  const raw = source as {
+    expenses?: unknown
+    availableCapital?: unknown
+    optimistic?: unknown
+    pessimistic?: unknown
+  }
+  const expenses = Array.isArray(raw.expenses)
+    ? ensureExpenses(
+        raw.expenses.map((row) =>
+          normalizeExpenseRow(row as Partial<ExpenseRow>, categories),
+        ),
+      )
+    : fallback.expenses.map((row) => ({ ...row }))
+  const availableCapital =
+    raw.availableCapital === undefined || raw.availableCapital === null
+      ? fallback.availableCapital
+      : roundPln(Number(raw.availableCapital) || 0)
+  const optimistic =
+    raw.optimistic === undefined || raw.optimistic === null
+      ? { ...fallback.optimistic }
+      : normalizeRunwayScenario(raw.optimistic, fallback.optimistic)
+  const pessimistic =
+    raw.pessimistic === undefined || raw.pessimistic === null
+      ? { ...fallback.pessimistic }
+      : normalizeRunwayScenario(raw.pessimistic, fallback.pessimistic)
+  return { expenses, availableCapital, optimistic, pessimistic }
+}
+
+function forkExpenses(rows: ExpenseRow[]): ExpenseRow[] {
+  return ensureExpenses(
+    rows.map((row) =>
+      createExpenseRow({
+        description: row.description,
+        frequency: row.frequency,
+        amount: row.amount,
+        category: row.category,
+      }),
+    ),
+  )
+}
+
+function patchActiveSnapshot(
+  prev: Store,
+  patch: Partial<SnapshotFinance>,
+): Store {
+  const activeId = prev.snapshots.some((s) => s.id === prev.activeSnapshotId)
+    ? prev.activeSnapshotId
+    : prev.snapshots[0]?.id
+  if (!activeId) return prev
+  const current = prev.snapshots.find((s) => s.id === activeId)
+  if (!current) return prev
+  const nextFinance: SnapshotFinance = {
+    expenses: patch.expenses ?? current.expenses,
+    availableCapital: patch.availableCapital ?? current.availableCapital,
+    optimistic: patch.optimistic ?? current.optimistic,
+    pessimistic: patch.pessimistic ?? current.pessimistic,
+  }
+  return {
+    ...prev,
+    ...nextFinance,
+    activeSnapshotId: activeId,
+    snapshots: prev.snapshots.map((snapshot) =>
+      snapshot.id === activeId ? { ...snapshot, ...nextFinance } : snapshot,
+    ),
+  }
+}
+
+function adoptSnapshot(prev: Store, snapshot: Snapshot): Store {
+  return {
+    ...prev,
+    activeSnapshotId: snapshot.id,
+    expenses: snapshot.expenses,
+    availableCapital: snapshot.availableCapital,
+    optimistic: snapshot.optimistic,
+    pessimistic: snapshot.pessimistic,
+  }
+}
+
 function monthlyEquivalent(row: ExpenseRow): number {
   return roundPln(
     row.frequency === 'rocznie' ? row.amount / 12 : row.amount,
+  )
+}
+
+function yearlyEquivalent(row: ExpenseRow): number {
+  return roundPln(
+    row.frequency === 'rocznie' ? row.amount : row.amount * 12,
   )
 }
 
@@ -456,14 +600,45 @@ function rowTotal(row: AssetRow): number {
   return roundPln(row.quantity * row.unitValue)
 }
 
+function rowTotalMax(row: AssetRow): number {
+  return roundPln(row.quantity * row.unitValueMax)
+}
+
+function formatMoneyRange(min: number, max: number): string {
+  const lo = roundPln(Math.min(min, max))
+  const hi = roundPln(Math.max(min, max))
+  if (lo === hi) return pln.format(lo)
+  return `${pln.format(lo)} – ${pln.format(hi)}`
+}
+
+function sharePct(part: number, whole: number): number {
+  if (whole === 0) return 0
+  return (part / whole) * 100
+}
+
+function formatShare(
+  minPart: number,
+  maxPart: number,
+  grandMin: number,
+  grandMax: number,
+): string {
+  const average = (minPart + maxPart) / 2
+  const grandAverage = (grandMin + grandMax) / 2
+  return `${shareLabel.format(sharePct(average, grandAverage))}%`
+}
+
 function compareRows(a: AssetRow, b: AssetRow, key: SortKey): number {
   switch (key) {
     case 'quantity':
       return a.quantity - b.quantity
     case 'unitValue':
       return a.unitValue - b.unitValue
-    case 'total':
-      return rowTotal(a) - rowTotal(b)
+    case 'unitValueMax':
+      return a.unitValueMax - b.unitValueMax
+    case 'total': {
+      const byMin = rowTotal(a) - rowTotal(b)
+      return byMin !== 0 ? byMin : rowTotalMax(a) - rowTotalMax(b)
+    }
     case 'type':
       return a.type.localeCompare(b.type, 'pl')
     case 'location':
@@ -484,15 +659,29 @@ function nextSortState(
   return { sortKey: clicked, sortDir: 'asc' }
 }
 
-function loadStore(): Store {
+function isSnapshotLike(value: unknown): value is { rows: unknown[] } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Array.isArray((value as { rows?: unknown }).rows)
+}
+
+function snapshotId(value: unknown): string {
+  if (!value || typeof value !== 'object') return ''
+  const id = (value as { id?: unknown }).id
+  return typeof id === 'string' ? id : ''
+}
+
+/** Turn stored or pasted JSON into a store. Returns null when the shape is not recognized. */
+function parseStoreData(parsed: unknown): Store | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return createInitialStore()
-
-    const parsed: unknown = JSON.parse(raw)
-
     // Legacy flat row list → one snapshot
     if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return null
+      if (parsed.every(isSnapshotLike)) {
+        return parseStoreData({
+          snapshots: parsed,
+          activeSnapshotId: snapshotId(parsed[0]),
+        })
+      }
       const rows = ensureRows(
         parsed.map((row) =>
           normalizeRow(row as Partial<AssetRow>, {
@@ -505,7 +694,13 @@ function loadStore(): Store {
     }
 
     if (!isStore(parsed) || parsed.snapshots.length === 0) {
-      return createInitialStore()
+      if (isSnapshotLike(parsed)) {
+        return parseStoreData({
+          snapshots: [parsed],
+          activeSnapshotId: snapshotId(parsed),
+        })
+      }
+      return null
     }
 
     const assetTypes = normalizeOptionList(
@@ -522,30 +717,6 @@ function loadStore(): Store {
     )
     const optionLists = { types: assetTypes, groups: assetGroups }
 
-    const snapshots = parsed.snapshots.map((snapshot) => {
-      const rows = ensureRows(
-        Array.isArray(snapshot.rows)
-          ? snapshot.rows.map((row) => normalizeRow(row, optionLists))
-          : [createRow(undefined, optionLists)],
-      )
-      return {
-        id: typeof snapshot.id === 'string' ? snapshot.id : crypto.randomUUID(),
-        dateLabel:
-          typeof snapshot.dateLabel === 'string' && snapshot.dateLabel
-            ? snapshot.dateLabel
-            : formatDateLabel(new Date(), false),
-        createdAt:
-          typeof snapshot.createdAt === 'string'
-            ? snapshot.createdAt
-            : new Date().toISOString(),
-        rows,
-      }
-    })
-
-    const activeSnapshotId = snapshots.some((s) => s.id === parsed.activeSnapshotId)
-      ? parsed.activeSnapshotId
-      : snapshots[0].id
-
     const sortKey = isSortKey(parsed.sortKey) ? parsed.sortKey : null
     const sortDir =
       parsed.sortDir === 'asc' || parsed.sortDir === 'desc' ? parsed.sortDir : null
@@ -560,45 +731,133 @@ function loadStore(): Store {
       expenses: legacyExpenses,
       income: legacyIncome,
     }
-    const activeRows =
-      snapshots.find((s) => s.id === activeSnapshotId)?.rows ??
-      snapshots[0]?.rows ??
-      []
-    const availableCapital =
-      parsed.availableCapital === undefined || parsed.availableCapital === null
-        ? runwayCapital(activeRows)
-        : roundPln(Number(parsed.availableCapital) || 0)
-    const optimistic = normalizeRunwayScenario(
-      parsed.optimistic,
-      legacyScenario,
-    )
-    const pessimistic = normalizeRunwayScenario(
-      parsed.pessimistic,
-      legacyScenario,
-    )
-    const expenses = Array.isArray(parsed.expenses)
+    const storedExpenses = Array.isArray(parsed.expenses)
       ? ensureExpenses(
           parsed.expenses.map((row) =>
             normalizeExpenseRow(row, expenseCategories),
           ),
         )
       : [createExpenseRow(undefined, expenseCategories)]
+    const fallbackFinance: SnapshotFinance = {
+      expenses: storedExpenses,
+      availableCapital:
+        parsed.availableCapital === undefined || parsed.availableCapital === null
+          ? Number.NaN
+          : roundPln(Number(parsed.availableCapital) || 0),
+      optimistic: normalizeRunwayScenario(parsed.optimistic, legacyScenario),
+      pessimistic: normalizeRunwayScenario(parsed.pessimistic, legacyScenario),
+    }
+
+    const snapshots = parsed.snapshots.map((snapshot) => {
+      const rows = ensureRows(
+        Array.isArray(snapshot.rows)
+          ? snapshot.rows.map((row) => normalizeRow(row, optionLists))
+          : [createRow(undefined, optionLists)],
+      )
+      const finance = financeFromUnknown(
+        snapshot,
+        fallbackFinance,
+        expenseCategories,
+      )
+      if (!Number.isFinite(finance.availableCapital)) {
+        finance.availableCapital = runwayCapital(rows)
+      }
+      return {
+        id: typeof snapshot.id === 'string' ? snapshot.id : crypto.randomUUID(),
+        dateLabel:
+          typeof snapshot.dateLabel === 'string' && snapshot.dateLabel
+            ? snapshot.dateLabel
+            : formatDateLabel(new Date(), false),
+        createdAt:
+          typeof snapshot.createdAt === 'string'
+            ? snapshot.createdAt
+            : new Date().toISOString(),
+        rows,
+        ...finance,
+      }
+    })
+
+    const activeSnapshotId = snapshots.some((s) => s.id === parsed.activeSnapshotId)
+      ? parsed.activeSnapshotId
+      : snapshots[0].id
+    const active =
+      snapshots.find((snapshot) => snapshot.id === activeSnapshotId) ??
+      snapshots[0]
 
     return {
       snapshots,
       activeSnapshotId,
       sortKey: sortKey && sortDir ? sortKey : null,
       sortDir: sortKey && sortDir ? sortDir : null,
-      availableCapital,
-      optimistic,
-      pessimistic,
-      expenses,
+      availableCapital: active.availableCapital,
+      optimistic: active.optimistic,
+      pessimistic: active.pessimistic,
+      expenses: active.expenses,
       assetTypes,
       assetGroups,
       expenseCategories,
     }
   } catch {
+    return null
+  }
+}
+
+function loadStore(): Store {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return createInitialStore()
+    return parseStoreData(JSON.parse(raw)) ?? createInitialStore()
+  } catch {
     return createInitialStore()
+  }
+}
+
+function storeToJson(store: Store): string {
+  return JSON.stringify(
+    {
+      snapshots: store.snapshots,
+      activeSnapshotId: store.activeSnapshotId,
+      availableCapital: store.availableCapital,
+      optimistic: store.optimistic,
+      pessimistic: store.pessimistic,
+      expenses: store.expenses,
+      assetTypes: store.assetTypes,
+      assetGroups: store.assetGroups,
+      expenseCategories: store.expenseCategories,
+    },
+    null,
+    2,
+  )
+}
+
+function importStoreJson(
+  raw: string,
+  current: Store,
+): { store: Store } | { error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { error: 'To nie jest poprawny JSON.' }
+  }
+  const next = parseStoreData(parsed)
+  if (!next) {
+    return {
+      error: 'JSON nie zawiera snapshotu, listy snapshotów ani listy wierszy.',
+    }
+  }
+  const replaceLists = isStore(parsed)
+  return {
+    store: {
+      ...next,
+      sortKey: current.sortKey,
+      sortDir: current.sortDir,
+      assetTypes: replaceLists ? next.assetTypes : current.assetTypes,
+      assetGroups: replaceLists ? next.assetGroups : current.assetGroups,
+      expenseCategories: replaceLists
+        ? next.expenseCategories
+        : current.expenseCategories,
+    },
   }
 }
 
@@ -616,6 +875,7 @@ type GroupSlice = {
   amount: number
   count: number
   pct: number
+  yearly?: number
 }
 
 function buildExpenseGroupSlices(
@@ -630,6 +890,9 @@ function buildExpenseGroupSlices(
     string,
     number
   >
+  const yearlyAmounts = Object.fromEntries(
+    categoryList.map((c) => [c, 0]),
+  ) as Record<string, number>
   const counts = Object.fromEntries(categoryList.map((c) => [c, 0])) as Record<
     string,
     number
@@ -637,20 +900,28 @@ function buildExpenseGroupSlices(
   for (const row of expenses) {
     if (!(row.category in amounts)) {
       amounts[row.category] = 0
+      yearlyAmounts[row.category] = 0
       counts[row.category] = 0
       categoryList.push(row.category)
     }
     amounts[row.category] += monthlyEquivalent(row)
+    yearlyAmounts[row.category] += yearlyEquivalent(row)
     counts[row.category] += 1
   }
   const total = categoryList.reduce((sum, category) => sum + amounts[category], 0)
-  const roundedTotal = roundPln(total)
-  const slices = categoryList.map((group) => ({
-    group,
-    amount: roundPln(amounts[group]),
-    count: counts[group],
-    pct: roundedTotal > 0 ? (roundPln(amounts[group]) / roundedTotal) * 100 : 0,
-  }))
+  const roundedTotal = roundZloty(total)
+  const slices = categoryList
+    .map((group) => {
+      const amount = roundZloty(amounts[group])
+      return {
+        group,
+        amount,
+        yearly: roundZloty(yearlyAmounts[group]),
+        count: counts[group],
+        pct: roundedTotal > 0 ? (amount / roundedTotal) * 100 : 0,
+      }
+    })
+    .sort((a, b) => b.amount - a.amount)
   return { slices, total: roundedTotal }
 }
 
@@ -800,6 +1071,50 @@ function formatYearsLabel(years: number | null): string {
   return `${formatYears(years)} lat`
 }
 
+function ScenarioAmount({
+  label,
+  value,
+  onDelta,
+  onValue,
+}: {
+  label: string
+  value: number
+  onDelta: (delta: number) => void
+  onValue: (value: number) => void
+}) {
+  return (
+    <div className="expense-amount">
+      <button
+        type="button"
+        className="expense-step"
+        onClick={() => onDelta(-100)}
+        aria-label={`Zmniejsz ${label} o 100`}
+        title="−100"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        inputMode="decimal"
+        step="100"
+        min="0"
+        aria-label={label}
+        value={value}
+        onChange={(e) => onValue(parseNumber(e.target.value))}
+      />
+      <button
+        type="button"
+        className="expense-step"
+        onClick={() => onDelta(100)}
+        aria-label={`Zwiększ ${label} o 100`}
+        title="+100"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
 function RunwayPanel({
   availableCapital,
   optimistic,
@@ -820,19 +1135,21 @@ function RunwayPanel({
   onPullCapital: () => void
   onPullExpenses: () => void
 }) {
-  const [selected, setSelected] = useState<RunwayScenarioKey>('optimistic')
   const capital = Math.max(0, roundPln(availableCapital))
-  const incomeAdjustments = [100, -100, 1000, -1000] as const
   const scenarios: { key: RunwayScenarioKey; label: string; data: RunwayScenario }[] =
     [
       { key: 'optimistic', label: 'Optymistyczny', data: optimistic },
       { key: 'pessimistic', label: 'Pesymistyczny', data: pessimistic },
     ]
 
-  function adjustSelectedIncome(delta: number) {
-    const current = selected === 'optimistic' ? optimistic : pessimistic
-    onScenarioChange(selected, {
-      income: Math.max(0, roundPln(current.income + delta)),
+  function adjustScenario(
+    key: RunwayScenarioKey,
+    field: keyof RunwayScenario,
+    delta: number,
+  ) {
+    const current = key === 'optimistic' ? optimistic : pessimistic
+    onScenarioChange(key, {
+      [field]: Math.max(0, roundPln(current[field] + delta)),
     })
   }
 
@@ -841,8 +1158,7 @@ function RunwayPanel({
       <h2 className="runway-title">Na ile starczy środków</h2>
       <p className="runway-hint">
         Wspólny kapitał (Gotówka, Kruszcze, Krypto, Giełda). Scenariusze mają
-        osobne wydatki i wpływy. Korekty +100/−100… zmieniają wpływy w
-        zaznaczonym scenariuszu.
+        osobne wydatki i wpływy.
       </p>
 
       <div className="runway-fields">
@@ -886,14 +1202,7 @@ function RunwayPanel({
               <th scope="col" />
               {scenarios.map((scenario) => (
                 <th key={scenario.key} scope="col">
-                  <button
-                    type="button"
-                    className={`runway-scenario-tab${selected === scenario.key ? ' is-selected' : ''}`}
-                    onClick={() => setSelected(scenario.key)}
-                    aria-pressed={selected === scenario.key}
-                  >
-                    {scenario.label}
-                  </button>
+                  {scenario.label}
                 </th>
               ))}
             </tr>
@@ -903,18 +1212,14 @@ function RunwayPanel({
               <th scope="row">Wydatki</th>
               {scenarios.map((scenario) => (
                 <td key={`${scenario.key}-expenses`}>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="10"
-                    min="0"
-                    aria-label={`Wydatki — ${scenario.label}`}
+                  <ScenarioAmount
+                    label={`Wydatki — ${scenario.label}`}
                     value={scenario.data.expenses}
-                    onFocus={() => setSelected(scenario.key)}
-                    onChange={(e) =>
-                      onScenarioChange(scenario.key, {
-                        expenses: parseNumber(e.target.value),
-                      })
+                    onDelta={(delta) =>
+                      adjustScenario(scenario.key, 'expenses', delta)
+                    }
+                    onValue={(value) =>
+                      onScenarioChange(scenario.key, { expenses: value })
                     }
                   />
                 </td>
@@ -924,18 +1229,14 @@ function RunwayPanel({
               <th scope="row">Wpływy</th>
               {scenarios.map((scenario) => (
                 <td key={`${scenario.key}-income`}>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="10"
-                    min="0"
-                    aria-label={`Wpływy — ${scenario.label}`}
+                  <ScenarioAmount
+                    label={`Wpływy — ${scenario.label}`}
                     value={scenario.data.income}
-                    onFocus={() => setSelected(scenario.key)}
-                    onChange={(e) =>
-                      onScenarioChange(scenario.key, {
-                        income: parseNumber(e.target.value),
-                      })
+                    onDelta={(delta) =>
+                      adjustScenario(scenario.key, 'income', delta)
+                    }
+                    onValue={(value) =>
+                      onScenarioChange(scenario.key, { income: value })
                     }
                   />
                 </td>
@@ -962,22 +1263,6 @@ function RunwayPanel({
             </tr>
           </tbody>
         </table>
-      </div>
-
-      <div className="runway-adjust" role="group" aria-label="Szybka korekta wpływów zaznaczonego scenariusza">
-        <span className="runway-adjust-label">
-          Wpływy ({selected === 'optimistic' ? 'optymistyczny' : 'pesymistyczny'}):
-        </span>
-        {incomeAdjustments.map((delta) => (
-          <button
-            key={delta}
-            type="button"
-            className="runway-adjust-btn"
-            onClick={() => adjustSelectedIncome(delta)}
-          >
-            {delta > 0 ? `+${delta}` : String(delta)}
-          </button>
-        ))}
       </div>
     </section>
   )
@@ -1030,6 +1315,14 @@ function ExpensesPanel({
     onChange(
       expenses.map((row) => (row.id === id ? { ...row, ...patch } : row)),
     )
+  }
+
+  function adjustExpense(id: string, delta: number) {
+    const row = expenses.find((item) => item.id === id)
+    if (!row) return
+    updateExpense(id, {
+      amount: Math.max(0, roundPln(row.amount + delta)),
+    })
   }
 
   function removeExpense(id: string) {
@@ -1094,19 +1387,39 @@ function ExpensesPanel({
                       />
                     </td>
                     <td className="col-unit">
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        step="10"
-                        min="0"
-                        aria-label={`wartość wydatku, wiersz ${index + 1}`}
-                        value={row.amount}
-                        onChange={(e) =>
-                          updateExpense(row.id, {
-                            amount: parseNumber(e.target.value),
-                          })
-                        }
-                      />
+                      <div className="expense-amount">
+                        <button
+                          type="button"
+                          className="expense-step"
+                          onClick={() => adjustExpense(row.id, -100)}
+                          aria-label={`Zmniejsz wartość o 100, wiersz ${index + 1}`}
+                          title="−100"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="10"
+                          min="0"
+                          aria-label={`wartość wydatku, wiersz ${index + 1}`}
+                          value={row.amount}
+                          onChange={(e) =>
+                            updateExpense(row.id, {
+                              amount: parseNumber(e.target.value),
+                            })
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="expense-step"
+                          onClick={() => adjustExpense(row.id, 100)}
+                          aria-label={`Zwiększ wartość o 100, wiersz ${index + 1}`}
+                          title="+100"
+                        >
+                          +
+                        </button>
+                      </div>
                     </td>
                     <td>
                       <select
@@ -1174,7 +1487,7 @@ function ExpensesPanel({
                 <tr>
                   <td colSpan={3}>Suma miesięczna (równoważnik)</td>
                   <td className="money total" colSpan={2}>
-                    {pln.format(monthlyTotal)}
+                    {formatZlotyPerMonth(monthlyTotal)}
                   </td>
                 </tr>
               </tfoot>
@@ -1306,6 +1619,105 @@ function SettingsModal({
   )
 }
 
+function ImportExportModal({
+  json,
+  onImport,
+  onClose,
+}: {
+  json: string
+  onImport: (raw: string) => string | null
+  onClose: () => void
+}) {
+  const [text, setText] = useState(json)
+  const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  async function copyJson() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setError('')
+    } catch {
+      setError('Nie udało się skopiować. Zaznacz JSON i skopiuj go ręcznie.')
+    }
+  }
+
+  function applyImport() {
+    const message = onImport(text)
+    if (message) {
+      setError(message)
+      return
+    }
+    onClose()
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal modal-json"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-export-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="modal-header">
+          <h2 id="import-export-title">Import / eksport</h2>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onClose}
+            aria-label="Zamknij"
+          >
+            Zamknij
+          </button>
+        </header>
+        <p className="modal-hint">
+          Poniżej jest bieżący stan jako JSON: snapshoty, wydatki i szacunek
+          środków. Możesz go skopiować albo wkleić własny i zaimportować.
+        </p>
+        <label className="settings-field json-field">
+          <span>JSON</span>
+          <textarea
+            rows={18}
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value)
+              setCopied(false)
+              setError('')
+            }}
+            spellCheck={false}
+            aria-label="JSON stanu"
+          />
+        </label>
+        {error && (
+          <p className="storage-auth-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Anuluj
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => void copyJson()}>
+            {copied ? 'Skopiowano' : 'Kopiuj'}
+          </button>
+          <button type="button" className="btn-primary" onClick={applyImport}>
+            Importuj
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DonutChart({
   title,
   ariaLabel,
@@ -1338,6 +1750,10 @@ function DonutChart({
     maximumFractionDigits: 1,
     minimumFractionDigits: 0,
   })
+  const showYearly = slices.some((slice) => slice.yearly !== undefined)
+  const yearlyTotal = showYearly
+    ? roundZloty(slices.reduce((sum, slice) => sum + (slice.yearly ?? 0), 0))
+    : 0
 
   return (
     <section className="group-chart" aria-label={ariaLabel}>
@@ -1396,7 +1812,18 @@ function DonutChart({
             </text>
           </svg>
         </div>
-        <ul className="group-legend">
+        <ul className={`group-legend${showYearly ? ' has-yearly' : ''}`}>
+          {showYearly && (
+            <li className="group-legend-head">
+              <span />
+              <span />
+              <span className="group-legend-meta">
+                <span>mies.</span>
+                <span className="group-legend-yearly">rocznie</span>
+                <span className="group-legend-pct">%</span>
+              </span>
+            </li>
+          )}
           {slices.map((slice) => (
             <li key={slice.group}>
               <span
@@ -1409,12 +1836,32 @@ function DonutChart({
               </span>
               <span className="group-legend-meta">
                 {pln.format(slice.amount)}
+                {slice.yearly !== undefined && (
+                  <span className="group-legend-yearly">
+                    {pln.format(slice.yearly)}
+                  </span>
+                )}
                 <span className="group-legend-pct">
                   {pctLabel.format(slice.pct)}%
                 </span>
               </span>
             </li>
           ))}
+          {showYearly && (
+            <li className="group-legend-total">
+              <span />
+              <span className="group-legend-name">Suma</span>
+              <span className="group-legend-meta">
+                {pln.format(total)}
+                <span className="group-legend-yearly">
+                  {pln.format(yearlyTotal)}
+                </span>
+                <span className="group-legend-pct">
+                  {total > 0 ? '100%' : '0%'}
+                </span>
+              </span>
+            </li>
+          )}
         </ul>
       </div>
     </section>
@@ -1573,9 +2020,63 @@ function ExpenseDonutChart({
   )
 }
 
+function mergeRemoteSnapshots(
+  remote: RemoteSnapshot[],
+  prev: Store,
+): Pick<
+  Store,
+  | 'snapshots'
+  | 'activeSnapshotId'
+  | 'expenses'
+  | 'availableCapital'
+  | 'optimistic'
+  | 'pessimistic'
+> {
+  const fallback: SnapshotFinance = {
+    expenses: prev.expenses,
+    availableCapital: prev.availableCapital,
+    optimistic: prev.optimistic,
+    pessimistic: prev.pessimistic,
+  }
+  const lists = { types: prev.assetTypes, groups: prev.assetGroups }
+  const snapshots = remote.map((snapshot) => {
+    const rows = ensureRows(
+      Array.isArray(snapshot.rows)
+        ? snapshot.rows.map((row) =>
+            normalizeRow(row as Partial<AssetRow>, lists),
+          )
+        : [createRow(undefined, lists)],
+    )
+    return {
+      id: snapshot.id,
+      dateLabel: snapshot.dateLabel,
+      createdAt: snapshot.createdAt,
+      rows,
+      ...financeFromUnknown(snapshot, fallback, prev.expenseCategories),
+    }
+  })
+  const activeSnapshotId = snapshots.some(
+    (snapshot) => snapshot.id === prev.activeSnapshotId,
+  )
+    ? prev.activeSnapshotId
+    : snapshots[0].id
+  const active =
+    snapshots.find((snapshot) => snapshot.id === activeSnapshotId) ??
+    snapshots[0]
+  return {
+    snapshots,
+    activeSnapshotId,
+    expenses: active.expenses,
+    availableCapital: active.availableCapital,
+    optimistic: active.optimistic,
+    pessimistic: active.pessimistic,
+  }
+}
+
 function App() {
   const [store, setStore] = useState<Store>(loadStore)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [transferOpen, setTransferOpen] = useState(false)
   const [deleteSnapshotOpen, setDeleteSnapshotOpen] = useState(false)
   const [sync, setSync] = useState<SyncState>({
     status: 'idle',
@@ -1612,36 +2113,13 @@ function App() {
       try {
         const remote = await fetchRemoteSnapshots()
         if (remote.length > 0) {
-          skipNextRemotePush.current = true
-          setStore((prev) => {
-            const snapshots = remote.map((snapshot) => {
-              const rows = ensureRows(
-                Array.isArray(snapshot.rows)
-                  ? snapshot.rows.map((row) =>
-                      normalizeRow(row as Partial<AssetRow>, {
-                        types: prev.assetTypes,
-                        groups: prev.assetGroups,
-                      }),
-                    )
-                  : [createRow(undefined, {
-                      types: prev.assetTypes,
-                      groups: prev.assetGroups,
-                    })],
-              )
-              return {
-                id: snapshot.id,
-                dateLabel: snapshot.dateLabel,
-                createdAt: snapshot.createdAt,
-                rows,
-              }
-            })
-            const activeSnapshotId = snapshots.some(
-              (s) => s.id === prev.activeSnapshotId,
-            )
-              ? prev.activeSnapshotId
-              : snapshots[0].id
-            return { ...prev, snapshots, activeSnapshotId }
-          })
+          if (remote.every(remoteSnapshotHasFinance)) {
+            skipNextRemotePush.current = true
+          }
+          setStore((prev) => ({
+            ...prev,
+            ...mergeRemoteSnapshots(remote, prev),
+          }))
           remoteReady.current = true
           setSync({ status: 'ok', message: 'Snapshoty zsynchronizowane.' })
           return
@@ -1719,38 +2197,13 @@ function App() {
       setSync({ status: 'syncing', message: 'Ładowanie snapshotów…' })
       const remote = await fetchRemoteSnapshots()
       if (remote.length > 0) {
-        skipNextRemotePush.current = true
-        setStore((prev) => {
-          const snapshots = remote.map((snapshot) => {
-            const rows = ensureRows(
-              Array.isArray(snapshot.rows)
-                ? snapshot.rows.map((row) =>
-                    normalizeRow(row as Partial<AssetRow>, {
-                      types: prev.assetTypes,
-                      groups: prev.assetGroups,
-                    }),
-                  )
-                : [
-                    createRow(undefined, {
-                      types: prev.assetTypes,
-                      groups: prev.assetGroups,
-                    }),
-                  ],
-            )
-            return {
-              id: snapshot.id,
-              dateLabel: snapshot.dateLabel,
-              createdAt: snapshot.createdAt,
-              rows,
-            }
-          })
-          const activeSnapshotId = snapshots.some(
-            (s) => s.id === prev.activeSnapshotId,
-          )
-            ? prev.activeSnapshotId
-            : snapshots[0].id
-          return { ...prev, snapshots, activeSnapshotId }
-        })
+        if (remote.every(remoteSnapshotHasFinance)) {
+          skipNextRemotePush.current = true
+        }
+        setStore((prev) => ({
+          ...prev,
+          ...mergeRemoteSnapshots(remote, prev),
+        }))
       } else {
         await pushRemoteSnapshots(store.snapshots)
       }
@@ -1785,10 +2238,15 @@ function App() {
 
   const rows = activeSnapshot?.rows ?? [createRow()]
 
-  const grandTotal = useMemo(
-    () => rows.reduce((sum, row) => sum + rowTotal(row), 0),
-    [rows],
-  )
+  const grandTotal = useMemo(() => {
+    let min = 0
+    let max = 0
+    for (const row of rows) {
+      min += rowTotal(row)
+      max += rowTotalMax(row)
+    }
+    return { min: roundPln(min), max: roundPln(max) }
+  }, [rows])
 
   function updateActiveRows(updater: (prev: AssetRow[]) => AssetRow[]) {
     setStore((prev) => {
@@ -1823,11 +2281,10 @@ function App() {
   }
 
   function selectSnapshot(id: string) {
-    setStore((prev) =>
-      prev.snapshots.some((s) => s.id === id)
-        ? { ...prev, activeSnapshotId: id }
-        : prev,
-    )
+    setStore((prev) => {
+      const next = prev.snapshots.find((snapshot) => snapshot.id === id)
+      return next ? adoptSnapshot(prev, next) : prev
+    })
   }
 
   function deleteActiveSnapshot() {
@@ -1839,11 +2296,11 @@ function App() {
         : prev.snapshots[0]?.id
       if (!removeId) return prev
       const snapshots = prev.snapshots.filter((s) => s.id !== removeId)
-      const activeSnapshotId = [...snapshots].sort((a, b) =>
+      const active = [...snapshots].sort((a, b) =>
         b.createdAt.localeCompare(a.createdAt),
-      )[0]?.id
-      if (!activeSnapshotId) return prev
-      return { ...prev, snapshots, activeSnapshotId }
+      )[0]
+      if (!active) return prev
+      return adoptSnapshot({ ...prev, snapshots }, active)
     })
   }
 
@@ -1856,12 +2313,17 @@ function App() {
       const snapshot = createSnapshot(
         cloneRows(sourceRows),
         nextDateLabel(prev.snapshots),
+        {
+          expenses: forkExpenses(source?.expenses ?? prev.expenses),
+          availableCapital: source?.availableCapital ?? prev.availableCapital,
+          optimistic: { ...(source?.optimistic ?? prev.optimistic) },
+          pessimistic: { ...(source?.pessimistic ?? prev.pessimistic) },
+        },
       )
-      return {
-        ...prev,
-        snapshots: [...prev.snapshots, snapshot],
-        activeSnapshotId: snapshot.id,
-      }
+      return adoptSnapshot(
+        { ...prev, snapshots: [...prev.snapshots, snapshot] },
+        snapshot,
+      )
     })
   }
 
@@ -2000,6 +2462,13 @@ function App() {
         >
           Ustawienia
         </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => setTransferOpen(true)}
+        >
+          Import / eksport
+        </button>
         <span
           className={`sync-status sync-${sync.status}`}
           title={sync.message || undefined}
@@ -2041,7 +2510,11 @@ function App() {
             <tr>
               <SortableTh label="Typ assetu" sortKey="type" className="col-type" />
               <SortableTh label="Ilość" sortKey="quantity" className="col-qty" />
-              <SortableTh label="wartość" sortKey="unitValue" className="col-unit" />
+              <SortableTh
+                label="wartość min-max"
+                sortKey="unitValue"
+                className="col-unit"
+              />
               <SortableTh label="Łącznie" sortKey="total" className="money" />
               <SortableTh label="Lokalizacja" sortKey="location" />
               <SortableTh label="Grupa" sortKey="group" className="col-group" />
@@ -2089,20 +2562,49 @@ function App() {
                   />
                 </td>
                 <td className="col-unit">
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="10"
-                    aria-label={`wartość, wiersz ${index + 1}`}
-                    value={row.unitValue}
-                    onChange={(e) =>
-                      updateRow(row.id, {
-                        unitValue: parseMoneyInput(e.target.value),
-                      })
-                    }
-                  />
+                  <div className="value-range">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="10"
+                      aria-label={`wartość min, wiersz ${index + 1}`}
+                      value={row.unitValue}
+                      onChange={(e) =>
+                        updateRow(row.id, {
+                          unitValue: parseMoneyInput(e.target.value),
+                        })
+                      }
+                    />
+                    <span className="value-range-sep" aria-hidden="true">
+                      -
+                    </span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="10"
+                      aria-label={`wartość max, wiersz ${index + 1}`}
+                      value={row.unitValueMax}
+                      onChange={(e) =>
+                        updateRow(row.id, {
+                          unitValueMax: parseMoneyInput(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
                 </td>
-                <td className="money">{pln.format(rowTotal(row))}</td>
+                <td className="money">
+                  <span className="total-amount">
+                    {formatMoneyRange(rowTotal(row), rowTotalMax(row))}
+                  </span>
+                  <span className="total-share">
+                    {formatShare(
+                      rowTotal(row),
+                      rowTotalMax(row),
+                      grandTotal.min,
+                      grandTotal.max,
+                    )}
+                  </span>
+                </td>
                 <td>
                   <input
                     type="text"
@@ -2161,7 +2663,9 @@ function App() {
           <tfoot>
             <tr>
               <td colSpan={3}>Suma</td>
-              <td className="money total">{pln.format(grandTotal)}</td>
+              <td className="money total">
+                {formatMoneyRange(grandTotal.min, grandTotal.max)}
+              </td>
               <td />
               <td />
               <td />
@@ -2195,33 +2699,34 @@ function App() {
           optimistic={store.optimistic}
           pessimistic={store.pessimistic}
           onCapitalChange={(value) =>
-            setStore((prev) => ({ ...prev, availableCapital: value }))
+            setStore((prev) =>
+              patchActiveSnapshot(prev, { availableCapital: value }),
+            )
           }
           onScenarioChange={(key, patch) =>
-            setStore((prev) => ({
-              ...prev,
-              [key]: { ...prev[key], ...patch },
-            }))
+            setStore((prev) =>
+              patchActiveSnapshot(prev, {
+                [key]: { ...prev[key], ...patch },
+              }),
+            )
           }
           onPullCapital={() =>
             setStore((prev) => {
               const active =
                 prev.snapshots.find((s) => s.id === prev.activeSnapshotId) ??
                 prev.snapshots[0]
-              return {
-                ...prev,
+              return patchActiveSnapshot(prev, {
                 availableCapital: runwayCapital(active?.rows ?? []),
-              }
+              })
             })
           }
           onPullExpenses={() =>
             setStore((prev) => {
               const total = expensesMonthlyTotal(prev.expenses)
-              return {
-                ...prev,
+              return patchActiveSnapshot(prev, {
                 optimistic: { ...prev.optimistic, expenses: total },
                 pessimistic: { ...prev.pessimistic, expenses: total },
-              }
+              })
             })
           }
         />
@@ -2230,7 +2735,9 @@ function App() {
       <ExpensesPanel
         expenses={store.expenses}
         categories={store.expenseCategories}
-        onChange={(expenses) => setStore((prev) => ({ ...prev, expenses }))}
+        onChange={(expenses) =>
+          setStore((prev) => patchActiveSnapshot(prev, { expenses }))
+        }
       />
 
       {deleteSnapshotOpen && activeSnapshot && (
@@ -2271,6 +2778,19 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {transferOpen && (
+        <ImportExportModal
+          json={storeToJson(store)}
+          onClose={() => setTransferOpen(false)}
+          onImport={(raw) => {
+            const result = importStoreJson(raw, store)
+            if ('error' in result) return result.error
+            setStore(result.store)
+            return null
+          }}
+        />
       )}
 
       {settingsOpen && (

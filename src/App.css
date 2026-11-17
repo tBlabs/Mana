@@ -55,7 +55,7 @@
 }
 
 .app {
-  width: min(1100px, 100%);
+  width: min(1440px, 100%);
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
 }
@@ -268,6 +268,20 @@
   width: min(420px, 100%);
 }
 
+.modal-json {
+  width: min(860px, 100%);
+}
+
+.json-field textarea {
+  min-height: 18rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+.modal-json .storage-auth-error {
+  margin: 0.35rem 0 0.75rem;
+}
+
 .table-wrap {
   overflow-x: auto;
   border: 1px solid #d8dee6;
@@ -423,6 +437,17 @@ th.money .sort-btn {
   max-width: 11ch;
 }
 
+.value-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.value-range-sep {
+  color: #5c6570;
+  font-weight: 600;
+}
+
 .col-qty,
 .col-unit,
 .money {
@@ -433,6 +458,18 @@ th.money .sort-btn {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   font-weight: 600;
+}
+
+.total-amount,
+.total-share {
+  display: block;
+}
+
+.total-share {
+  margin-top: 0.1rem;
+  color: #5c6570;
+  font-size: 0.82rem;
+  font-weight: 500;
 }
 
 .money.total {
@@ -641,8 +678,9 @@ th.money .sort-btn {
 }
 
 .runway-table input {
-  width: 100%;
-  max-width: 11ch;
+  width: 12ch;
+  min-width: 12ch;
+  max-width: none;
   box-sizing: border-box;
   padding: 0.35rem 0.45rem;
   border: 1px solid #c9d2dc;
@@ -653,28 +691,14 @@ th.money .sort-btn {
   text-align: right;
 }
 
+.runway-table .expense-amount {
+  justify-content: flex-end;
+}
+
 .runway-table input:focus {
   outline: 2px solid #1f6feb;
   outline-offset: 1px;
   border-color: #1f6feb;
-}
-
-.runway-scenario-tab {
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 650;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: #4b5563;
-  cursor: pointer;
-  padding: 0.25rem 0.45rem;
-}
-
-.runway-scenario-tab.is-selected {
-  color: #1f6feb;
-  border-color: #b7d0fb;
-  background: #eef4ff;
 }
 
 .runway-years-cell {
@@ -682,36 +706,39 @@ th.money .sort-btn {
   font-weight: 700;
 }
 
-.runway-adjust {
-  display: flex;
-  flex-wrap: wrap;
+.expense-amount {
+  display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
 }
 
-.runway-adjust-label {
-  font-size: 0.8rem;
-  color: #5c6570;
-  margin-right: 0.15rem;
+.expenses .expense-amount input[type='number'] {
+  width: 8ch;
+  min-width: 8ch;
+  max-width: 8ch;
 }
 
-.runway-adjust-btn {
+.expense-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 1px solid #c9d2dc;
+  border-radius: 6px;
+  background: #fff;
+  color: #15202b;
   font: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  padding: 0.2rem 0.45rem;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #1f6feb;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
-.runway-adjust-btn:hover {
-  color: #1859c4;
+.expense-step:hover {
+  border-color: #1f6feb;
+  color: #1f6feb;
   background: #eef4ff;
 }
 
@@ -784,13 +811,14 @@ th.money .sort-btn {
 
 .group-chart-body {
   display: flex;
-  align-items: center;
-  gap: 1.75rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1rem;
 }
 
 .group-chart-visual {
-  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
 }
 
 .group-donut {
@@ -854,6 +882,10 @@ th.money .sort-btn {
   color: #15202b;
 }
 
+.group-legend.has-yearly .group-legend-name {
+  white-space: nowrap;
+}
+
 .group-legend-meta {
   display: flex;
   align-items: baseline;
@@ -861,6 +893,33 @@ th.money .sort-btn {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.group-legend-yearly {
+  min-width: 6.5rem;
+  text-align: right;
+}
+
+.group-legend-head {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5c6570;
+}
+
+.group-legend-head .group-legend-meta {
+  font-weight: 650;
+}
+
+.group-legend-total {
+  border-top: 1px solid #e6ebf0;
+  padding-top: 0.45rem;
+}
+
+.group-legend-total .group-legend-name,
+.group-legend-total .group-legend-meta {
+  font-weight: 700;
 }
 
 .group-legend-pct {

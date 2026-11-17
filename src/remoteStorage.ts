@@ -1,16 +1,47 @@
 import { DatasetType, OnlineStorage } from '@tblabs/storage'
 
-export const STORAGE_SERVER = 'https://stage.storage.specteam.pl/v5/'
+export const STORAGE_SERVER = 'https://storage.specteam.pl/v5/'
 /** OnlineStorage database directory on stage. */
 export const STORAGE_DATABASE = 'Mana'
 /** ObjectDataset inside the Snapshots database (app-owned items). */
 export const STORAGE_DATASET = 'Snapshots'
+
+export type RemoteRunwayScenario = {
+  expenses: number
+  income: number
+}
 
 export type RemoteSnapshot = {
   id: string
   dateLabel: string
   createdAt: string
   rows: unknown[]
+  /** Missing on snapshots saved before expenses lived on the snapshot. */
+  expenses?: unknown[]
+  /** Missing on snapshots saved before runway lived on the snapshot. */
+  availableCapital?: number
+  optimistic?: RemoteRunwayScenario
+  pessimistic?: RemoteRunwayScenario
+}
+
+function isRemoteScenario(value: unknown): value is RemoteRunwayScenario {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<RemoteRunwayScenario>
+  return (
+    typeof candidate.expenses === 'number' &&
+    Number.isFinite(candidate.expenses) &&
+    typeof candidate.income === 'number' &&
+    Number.isFinite(candidate.income)
+  )
+}
+
+export function remoteSnapshotHasFinance(snapshot: RemoteSnapshot): boolean {
+  return (
+    Array.isArray(snapshot.expenses) &&
+    typeof snapshot.availableCapital === 'number' &&
+    snapshot.optimistic !== undefined &&
+    snapshot.pessimistic !== undefined
+  )
 }
 
 export type SyncStatus =
@@ -93,6 +124,18 @@ export async function fetchRemoteSnapshots(): Promise<RemoteSnapshot[]> {
             ? item.createdAt
             : new Date().toISOString(),
         rows: Array.isArray(item?.rows) ? item.rows : [],
+        expenses: Array.isArray(item?.expenses) ? item.expenses : undefined,
+        availableCapital:
+          typeof item?.availableCapital === 'number' &&
+          Number.isFinite(item.availableCapital)
+            ? item.availableCapital
+            : undefined,
+        optimistic: isRemoteScenario(item?.optimistic)
+          ? item.optimistic
+          : undefined,
+        pessimistic: isRemoteScenario(item?.pessimistic)
+          ? item.pessimistic
+          : undefined,
       } satisfies RemoteSnapshot
     }),
   )
@@ -113,6 +156,10 @@ export async function pushRemoteSnapshots(
       dateLabel: snapshot.dateLabel,
       createdAt: snapshot.createdAt,
       rows: snapshot.rows,
+      expenses: snapshot.expenses ?? [],
+      availableCapital: snapshot.availableCapital ?? 0,
+      optimistic: snapshot.optimistic ?? { expenses: 0, income: 0 },
+      pessimistic: snapshot.pessimistic ?? { expenses: 0, income: 0 },
     }
     nextIds.add(snapshot.id)
     if (knownSnapshotIds.has(snapshot.id)) {
